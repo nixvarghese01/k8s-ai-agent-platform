@@ -1,0 +1,37 @@
+# In-cluster name for the Ollama that runs on the WSL host (README §6.3):
+#   http://ollama.llm.svc.cluster.local:11434
+# A Service without a selector, pointed at 10.42.0.1: the node's address on the pod network
+# (cni0 bridge, first IP of k3s's default 10.42.0.0/24 pod CIDR on a single node). Unlike the
+# WSL IP it never changes, and unlike the hostname it's the same on every machine.
+# Needs Ollama listening on 0.0.0.0 (infra/scripts/host/03-ollama-config.sh).
+# If Ollama moves into k3s later, replace this file with a normal Deployment + Service.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ollama
+  namespace: llm
+spec:
+  ports:
+    - name: http
+      port: 11434
+      targetPort: 11434
+---
+apiVersion: discovery.k8s.io/v1
+kind: EndpointSlice
+metadata:
+  name: ollama-host
+  namespace: llm
+  labels:
+    kubernetes.io/service-name: ollama
+addressType: IPv4
+ports:
+  - name: http
+    port: 11434
+    protocol: TCP
+endpoints:
+  - addresses: ["10.42.0.1"]

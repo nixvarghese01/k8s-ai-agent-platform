@@ -1,0 +1,36 @@
+# Overrides for k3s's bundled Traefik chart.
+# Traefik listens directly on the WSL host's ports 80/443 (hostNetwork) instead of behind
+# servicelb's iptables rules. WSL only forwards Windows localhost to real listening sockets,
+# so this is what makes http://chat.local -> 127.0.0.1 work from a Windows browser.
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    hostNetwork: true
+    ports:
+      web:
+        port: 80
+      websecure:
+        port: 443
+    service:
+      spec:
+        type: ClusterIP # no servicelb pod competing for 80/443 (chart 40.x: service.spec.type)
+    # Binding ports below 1024 on the host needs root + NET_BIND_SERVICE
+    securityContext:
+      capabilities:
+        drop: [ALL]
+        add: [NET_BIND_SERVICE]
+      readOnlyRootFilesystem: true
+    podSecurityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+      runAsGroup: 0
+    # Host ports can't be shared: stop the old pod before starting the new one
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+        maxSurge: 0

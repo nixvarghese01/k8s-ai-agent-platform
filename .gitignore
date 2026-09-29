@@ -1,0 +1,57 @@
+# --- Machine-specific records: stay on the machine, never pushed ---
+# Generate your own with infra/scripts/host/00-assess.ps1 (README §6.0)
+SYSTEM_SPECS.md
+SYSTEM_ASSESSMENT.md
+docs/DEVICE_LOG.md
+
+# --- Secrets and local config ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+kubeconfig
+*.kubeconfig
+secrets/
+*-secret.yaml
+!*-secret.example.yaml
+
+# --- Data, models, artifacts (live in k3s volumes / MinIO, not Git) ---
+data/*
+!data/.gitkeep
+*.gguf
+*.safetensors
+*.onnx
+*.pkl
+*.joblib
+mlruns/
+mlartifacts/
+bentoml/
+.dagster/
+dagster_home/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# --- Node (n8n / UI tooling) ---
+node_modules/
+
+# --- Logs and OS/editor clutter ---
+*.log
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/*
+!.vscode/extensions.json

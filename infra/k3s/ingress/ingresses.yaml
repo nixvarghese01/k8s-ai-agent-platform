@@ -1,0 +1,39 @@
+# Host-based routing through k3s's bundled Traefik. Each *.local name needs a
+# Windows hosts-file entry (README §6.7). An Ingress must live in its Service's namespace.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat
+  namespace: ui
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: chat.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: open-webui
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: qdrant
+  namespace: storage
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: qdrant.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: qdrant
+                port:
+                  name: http
