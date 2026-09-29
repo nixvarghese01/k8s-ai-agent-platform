@@ -9,6 +9,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | **Cost** | $0 (all open source + GitHub free tier) |
 | **GPU** | Not required: everything runs on the CPU (small laptop GPUs with 2–4 GB VRAM don't help 3B models) |
 | **Timeline** | 8 weeks, part-time |
+| **License** | [MIT](LICENSE) |
 
 ---
 
@@ -123,6 +124,7 @@ All LLM calls ──► Langfuse (traces)     All pods ──► Prometheus ─�
 ```text
 local-ai-platform/
 ├── README.md
+├── LICENSE                 # MIT
 ├── Makefile                # make up / down / status / deploy (inside Ubuntu)
 ├── .gitignore              # also keeps machine-specific files (SYSTEM_*.md, DEVICE_LOG.md) local
 ├── .github/workflows/
@@ -547,3 +549,9 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 - GitHub Actions CI/CD to GHCR
 - Portfolio-ready repo with docs and demo
 - Hands-on skills: agents, MCP, Kubernetes, LLMOps
+
+---
+
+## License
+
+[MIT](LICENSE) © 2026 Nixon Varghese
