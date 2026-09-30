@@ -162,6 +162,7 @@ local-ai-platform/
 │       │   ├── 04-install-docker.sh
 │       │   ├── 05-on-demand-services.sh
 │       │   ├── windows-wsl-idle.ps1
+│       │   ├── windows-hosts.ps1    # *.local → ::1 in the hosts file (admin)
 │       │   └── windows-thermal.ps1
 │       ├── platform.ps1    # up / down / status from Windows
 │       ├── platform.sh     # up / down / status inside Ubuntu
@@ -353,7 +354,7 @@ Scripts only start and stop services; what runs inside k3s comes from the manife
 
 ### 6.7 Local DNS for `*.local` hostnames
 
-Add to `C:\Windows\System32\drivers\etc\hosts` (as admin):
+Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin PowerShell, from the repo folder). It backs up the hosts file, adds the lines below between `# BEGIN/END local-ai-platform` markers, and is safe to re-run; `-Remove` takes them out again. Manual equivalent, in `C:\Windows\System32\drivers\etc\hosts` (as admin):
 
 ```text
 ::1 chat.local llm.local agent.local mlflow.local dagster.local n8n.local
