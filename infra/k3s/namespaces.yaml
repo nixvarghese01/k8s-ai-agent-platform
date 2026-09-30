@@ -1,5 +1,9 @@
 # One namespace per platform layer (see README §3).
-# `llm` is created by llm/ollama-host.yaml (Ollama itself runs on the WSL host, README §6.3).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: llm
+---
 apiVersion: v1
 kind: Namespace
 metadata:

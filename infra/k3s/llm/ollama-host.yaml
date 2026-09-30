@@ -6,11 +6,6 @@
 # Needs Ollama listening on 0.0.0.0 (infra/scripts/host/03-ollama-config.sh).
 # If Ollama moves into k3s later, replace this file with a normal Deployment + Service.
 apiVersion: v1
-kind: Namespace
-metadata:
-  name: llm
----
-apiVersion: v1
 kind: Service
 metadata:
   name: ollama

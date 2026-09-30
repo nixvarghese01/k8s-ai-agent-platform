@@ -28,11 +28,26 @@ curl -s http://127.0.0.1:11434/api/generate \
   -d '{"model":"llama3.2:3b","prompt":"Reply with the single word OK.","stream":false}' |
   grep -o '"response":"[^"]*"\|"total_duration":[0-9]*'
 
-echo "== pod -> ollama / qdrant"
+echo "== pod -> ollama / litellm / qdrant"
 kubectl -n ui exec deploy/open-webui -- python -c "
-import urllib.request as u
+import json, urllib.request as u
 print('ollama', u.urlopen('http://ollama.llm.svc.cluster.local:11434/api/version').read())
+L = 'http://litellm.llm.svc.cluster.local:4000'
+print('litellm', u.urlopen(L + '/health/readiness').read()[:80])
+print('litellm models', [m['id'] for m in json.load(u.urlopen(L + '/v1/models'))['data']])
 print('qdrant', u.urlopen('http://qdrant.storage.svc.cluster.local:6333/readyz').read())"
+
+echo "== litellm chat + embedding (aliases chat-default, embed-default)"
+kubectl -n ui exec deploy/open-webui -- python -c "
+import json, time, urllib.request as u
+def post(path, body):
+    r = u.Request('http://litellm.llm.svc.cluster.local:4000/v1/' + path, json.dumps(body).encode(),
+                  {'Content-Type': 'application/json'})
+    t = time.time(); d = json.load(u.urlopen(r, timeout=600)); return d, time.time() - t
+d, s = post('chat/completions', {'model': 'chat-default', 'messages': [{'role': 'user', 'content': 'Reply with the single word OK.'}]})
+print('chat  %-30s %.1fs' % (d['choices'][0]['message']['content'].strip()[:30], s))
+d, s = post('embeddings', {'model': 'embed-default', 'input': 'hello'})
+print('embed dim=%-26d %.1fs' % (len(d['data'][0]['embedding']), s))"
 
 echo "== qdrant write/read"
 Q=http://$(kubectl -n storage get svc qdrant -o jsonpath='{.spec.clusterIP}'):6333
@@ -43,7 +58,7 @@ curl -s -X DELETE "$Q/collections/verify_test"; echo
 
 echo "== ingress (via WSL IP)"
 IP=$(hostname -I | awk '{print $1}'); echo "wsl ip $IP"
-for h in chat.local qdrant.local; do
+for h in chat.local llm.local qdrant.local; do
   curl -s -o /dev/null -w "$h -> %{http_code}\n" -H "Host: $h" "http://$IP/"
 done
 

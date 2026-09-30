@@ -1,0 +1,127 @@
+# LiteLLM: one OpenAI-compatible gateway in front of every model backend (README §6.9).
+#   In-cluster: http://litellm.llm.svc.cluster.local:4000/v1   API docs: http://llm.local/
+# Clients (Open WebUI, later the agent, n8n) ask for an alias such as `chat-default`; the
+# model_list below maps each alias to a real model. To switch or add a model, edit this
+# ConfigMap, then: kubectl apply -f infra/k3s/llm/litellm.yaml && make llm-reload
+# No master key and no database: the API is reachable only from this PC (WSL NAT), and
+# config comes from this file alone.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: litellm-config
+  namespace: llm
+data:
+  config.yaml: |
+    model_list:
+      # Chat. Point the alias at another model to switch every client at once.
+      - model_name: chat-default
+        litellm_params:
+          model: ollama_chat/llama3.2:3b
+          api_base: http://ollama.llm.svc.cluster.local:11434
+
+      # Embeddings for RAG. Changing the model changes the vectors: re-index Qdrant after.
+      - model_name: embed-default
+        litellm_params:
+          model: ollama/nomic-embed-text
+          api_base: http://ollama.llm.svc.cluster.local:11434
+        model_info:
+          mode: embedding
+
+      # More models: `ollama pull <name>` on the host, then add an entry like this one.
+      # - model_name: chat-tools          # better at function calling (README §15)
+      #   litellm_params:
+      #     model: ollama_chat/qwen2.5:3b
+      #     api_base: http://ollama.llm.svc.cluster.local:11434
+
+      # A second backend, e.g. Ollama on Windows using the GPU (README §6.9). Use the
+      # Windows host's IP as seen from WSL (`ip route | awk '/default/ {print $3}'`);
+      # it changes when WSL restarts.
+      # - model_name: chat-gpu
+      #   litellm_params:
+      #     model: ollama_chat/llama3.2:3b
+      #     api_base: http://<windows-host-ip>:11434
+
+      # A hosted model, with its key in the litellm-keys Secret (see env below).
+      # - model_name: chat-cloud
+      #   litellm_params:
+      #     model: anthropic/claude-sonnet-5-5
+      #     api_key: os.environ/ANTHROPIC_API_KEY
+
+    litellm_settings:
+      drop_params: true      # ignore OpenAI params a backend doesn't support
+      request_timeout: 600   # 3B models on CPU can take minutes on long prompts
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: litellm
+  namespace: llm
+  labels:
+    app: litellm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: litellm
+  template:
+    metadata:
+      labels:
+        app: litellm
+    spec:
+      containers:
+        - name: litellm
+          # Stable channel. Pin a release (main-vX.Y.Z-stable) once one is verified here.
+          image: ghcr.io/berriai/litellm:main-stable
+          args: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+          ports:
+            - name: http
+              containerPort: 4000
+          # Uncomment with the chat-cloud entry above, after:
+          #   kubectl -n llm create secret generic litellm-keys --from-literal=ANTHROPIC_API_KEY=...
+          # envFrom:
+          #   - secretRef:
+          #       name: litellm-keys
+          volumeMounts:
+            - name: config
+              mountPath: /app/config.yaml
+              subPath: config.yaml
+          resources:
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health/readiness
+              port: http
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /health/liveliness
+              port: http
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: litellm-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: litellm
+  namespace: llm
+spec:
+  selector:
+    app: litellm
+  ports:
+    - name: http
+      port: 4000
+      targetPort: http

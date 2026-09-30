@@ -1,4 +1,4 @@
-# Open WebUI chat, backed by host Ollama (LLM + embeddings) and Qdrant (RAG vectors).
+# Open WebUI chat, backed by LiteLLM (LLM + embeddings, served by host Ollama) and Qdrant (RAG vectors).
 # UI: http://chat.local (see ingress/ingresses.yaml). The first account created becomes admin.
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -37,21 +37,34 @@ spec:
           ports:
             - name: http
               containerPort: 8080
+          # These seed Open WebUI's settings on first start only; after that its database wins
+          # (README §6.9 covers switching an existing install).
           env:
-            # Ollama runs on the WSL host; llm/ollama-host.yaml gives it this in-cluster name
-            - name: OLLAMA_BASE_URL
-              value: http://ollama.llm.svc.cluster.local:11434
-            - name: ENABLE_OPENAI_API
+            # All models come through LiteLLM (llm/litellm.yaml), not straight from Ollama
+            - name: ENABLE_OLLAMA_API
               value: "false"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            - name: OPENAI_API_BASE_URL
+              value: http://litellm.llm.svc.cluster.local:4000/v1
+            - name: OPENAI_API_KEY
+              value: sk-local # LiteLLM runs without a key; Open WebUI just needs a value
+            - name: DEFAULT_MODELS
+              value: chat-default
             - name: VECTOR_DB
               value: qdrant
             - name: QDRANT_URI
               value: http://qdrant.storage.svc.cluster.local:6333
-            # Embed with Ollama instead of downloading a sentence-transformers model
+            # Embed through LiteLLM (nomic-embed-text on Ollama) instead of downloading a
+            # sentence-transformers model
             - name: RAG_EMBEDDING_ENGINE
-              value: ollama
+              value: openai
+            - name: RAG_OPENAI_API_BASE_URL
+              value: http://litellm.llm.svc.cluster.local:4000/v1
+            - name: RAG_OPENAI_API_KEY
+              value: sk-local
             - name: RAG_EMBEDDING_MODEL
-              value: nomic-embed-text
+              value: embed-default
             - name: ANONYMIZED_TELEMETRY
               value: "false"
           volumeMounts:

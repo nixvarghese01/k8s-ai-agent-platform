@@ -22,6 +22,25 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
+  name: llm
+  namespace: llm
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: llm.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: litellm
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
   name: qdrant
   namespace: storage
 spec:

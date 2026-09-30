@@ -4,7 +4,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 
 | | |
 |---|---|
-| **Core stack** | Ollama (3B models) · LangGraph · MCP · Qdrant · MLflow · Dagster · BentoML · n8n · Langfuse · ArgoCD |
+| **Core stack** | Ollama (3B models) · LiteLLM · LangGraph · MCP · Qdrant · MLflow · Dagster · BentoML · n8n · Langfuse · ArgoCD |
 | **Hardware** | Windows 11 laptop, 8+ CPU threads, 32 GB RAM, ~100 GB free SSD (reference build: Intel Core i7-9850H, 6 cores / 12 threads) |
 | **Cost** | $0 (all open source + GitHub free tier) |
 | **GPU** | Not required: everything runs on the CPU (small laptop GPUs with 2–4 GB VRAM don't help 3B models) |
@@ -52,6 +52,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | Ingress | Traefik (bundled with k3s) | Host-based routing to `*.local` UIs |
 | LLM | Ollama: `llama3.2:3b`, `qwen2.5:3b`, `phi3:mini` | CPU inference |
 | Embeddings | `nomic-embed-text` (via Ollama) | Vector embeddings for RAG |
+| LLM gateway | LiteLLM | One OpenAI-compatible API and model aliases for every backend |
 | Agent | LangGraph | Stateful agent graph / orchestration |
 | Protocol | MCP | Standard tool interface between agent and tools |
 | Vector DB | Qdrant | Embedding storage and similarity search |
@@ -92,7 +93,7 @@ Windows 11 (32 GB) ── browser ──► http://*.local (hosts file → ::1 �
                ├── Docker Engine (image builds / compose only, own image store)
                └── k3s
                      ├── kube-system:   Traefik on host ports 80/443, CoreDNS, local-path storage
-                     ├── llm:           Service "ollama" → Ollama on the host
+                     ├── llm:           LiteLLM gateway (:4000) + Service "ollama" → Ollama on the host
                      ├── storage:       Qdrant, MinIO, Postgres
                      ├── mlops:         MLflow, Dagster, BentoML
                      ├── agent:         LangGraph + MCP servers
@@ -109,12 +110,13 @@ User ──► Open WebUI / Streamlit ──► Traefik ──► LangGraph agen
                                                    │
                      ┌─────────────────────────────┼──────────────────────────┐
                      ▼                             ▼                          ▼
-                Ollama (LLM)               MCP servers (tools)        BentoML (ML model)
+             LiteLLM (gateway)             MCP servers (tools)        BentoML (ML model)
                      │                             │
                      ▼                             ▼
-          Qdrant (RAG retrieval)        filesystem / web / memory / sqlite / time
+          Ollama (LLM + embeddings)     filesystem / web / memory / sqlite / time
+          Qdrant (RAG retrieval)
 
-All LLM calls ──► Langfuse (traces)     All pods ──► Prometheus ──► Grafana
+All LLM calls (via LiteLLM) ──► Langfuse (traces)     All pods ──► Prometheus ──► Grafana
 ```
 
 ---
@@ -125,7 +127,7 @@ All LLM calls ──► Langfuse (traces)     All pods ──► Prometheus ─�
 local-ai-platform/
 ├── README.md
 ├── LICENSE                 # MIT
-├── Makefile                # make up / down / status / deploy (inside Ubuntu)
+├── Makefile                # make up / down / status / deploy / llm-reload (inside Ubuntu)
 ├── .gitignore              # also keeps machine-specific files (SYSTEM_*.md, DEVICE_LOG.md) local
 ├── .github/workflows/
 │   ├── ci.yml              # lint + tests
@@ -136,6 +138,7 @@ local-ai-platform/
 │   │   ├── namespaces.yaml
 │   │   ├── limits.yaml     # default requests/limits per namespace
 │   │   ├── llm/ollama-host.yaml  # in-cluster Service for the host's Ollama
+│   │   ├── llm/litellm.yaml      # LLM gateway: model aliases (edit to switch/add models)
 │   │   ├── storage/qdrant.yaml
 │   │   ├── storage/minio.yaml
 │   │   ├── storage/postgres.yaml
@@ -163,7 +166,7 @@ local-ai-platform/
 │       ├── platform.ps1    # up / down / status from Windows
 │       ├── platform.sh     # up / down / status inside Ubuntu
 │       ├── deploy.sh
-│       ├── teardown.sh
+│       ├── teardown.sh     # delete all workloads and their volumes
 │       └── status.sh
 ├── agent/
 │   ├── Dockerfile
@@ -305,7 +308,7 @@ k3s runs as the `k3s` systemd service and ships `kubectl`, Traefik and the `loca
 
 ### 6.3 Models and Ollama settings
 
-Scripts: [`02-pull-models.sh`](infra/scripts/host/02-pull-models.sh) (your user) pulls `llama3.2:3b` and `nomic-embed-text` (~2.3 GB); [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh) (root) writes the systemd override:
+Scripts: [`02-pull-models.sh`](infra/scripts/host/02-pull-models.sh) (your user) pulls `llama3.2:3b` and `nomic-embed-text` (~2.3 GB), plus any models you pass it (`02-pull-models.sh qwen2.5:3b phi3:mini`); [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh) (root) writes the systemd override:
 
 ```ini
 # /etc/systemd/system/ollama.service.d/override.conf
@@ -315,7 +318,7 @@ Environment="OLLAMA_NUM_PARALLEL=1"       # one request at a time (heat, RAM)
 CPUQuota=400%                             # at most 4 cores' worth of CPU
 ```
 
-Ollama runs on the **WSL host**, not inside k3s (see [Key Decisions](#14-key-decisions)). Pods reach it as `http://ollama.llm.svc.cluster.local:11434`: [`llm/ollama-host.yaml`](infra/k3s/llm/ollama-host.yaml) is a Service pointed at `10.42.0.1`, the host's fixed address on k3s's pod network. With WSL's default NAT networking the host is reachable only from this PC, not the LAN.
+Ollama runs on the **WSL host**, not inside k3s (see [Key Decisions](#14-key-decisions)). Apps don't call it directly: they go through the LiteLLM gateway ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). LiteLLM reaches it as `http://ollama.llm.svc.cluster.local:11434`: [`llm/ollama-host.yaml`](infra/k3s/llm/ollama-host.yaml) is a Service pointed at `10.42.0.1`, the host's fixed address on k3s's pod network. With WSL's default NAT networking the host is reachable only from this PC, not the LAN.
 
 ### 6.4 Install Docker Engine
 
@@ -329,7 +332,9 @@ Inside Ubuntu, from the repo (`cd /mnt/e/Github/local-ai-platform`):
 make deploy        # = bash infra/scripts/deploy.sh
 ```
 
-This applies `infra/k3s/namespaces.yaml`, then everything under `infra/k3s/` (`kubectl apply -R -f infra/k3s/`), and waits for the pods.
+This applies `infra/k3s/namespaces.yaml`, then everything under `infra/k3s/` (`kubectl apply -R -f infra/k3s/`), and waits for LiteLLM, Qdrant and Open WebUI.
+
+To start over, `make teardown` ([`teardown.sh`](infra/scripts/teardown.sh)) deletes every workload **and its volumes** (Open WebUI accounts and chats, Qdrant vectors). It asks first. k3s, Ollama and the models stay installed.
 
 ### 6.6 Start and stop the platform
 
@@ -340,7 +345,7 @@ After [`05-on-demand-services.sh`](infra/scripts/host/05-on-demand-services.sh) 
 | `.\infra\scripts\platform.ps1 up` | `make up` | Start Ollama + k3s, wait until every pod is Ready, print URLs |
 | `.\infra\scripts\platform.ps1 up -Docker` | `make up-docker` | Same, plus Docker (the first `docker` command also starts it by itself) |
 | `.\infra\scripts\platform.ps1 down` | `make down` | Stop all pods cleanly (`k3s-killall.sh`), then k3s, Ollama, Docker. From Windows it also shuts Ubuntu down to free its RAM (skip with `-KeepWsl`; this closes open Ubuntu terminals) |
-| `.\infra\scripts\platform.ps1 status` | `make status` | Health check: services, pods since this start, models, Qdrant, ingress |
+| `.\infra\scripts\platform.ps1 status` | `make status` | Health check: services, pods since this start, models, LiteLLM chat + embedding, Qdrant, ingress |
 
 Scripts only start and stop services; what runs inside k3s comes from the manifests. Run [`windows-wsl-idle.ps1`](infra/scripts/host/windows-wsl-idle.ps1) once (then `wsl --shutdown`): without `instanceIdleTimeout=-1` / `vmIdleTimeout=-1`, WSL shuts Ubuntu down ~30 s after the last terminal closes, taking k3s with it.
 
@@ -351,7 +356,7 @@ Scripts only start and stop services; what runs inside k3s comes from the manife
 Add to `C:\Windows\System32\drivers\etc\hosts` (as admin):
 
 ```text
-::1 chat.local agent.local mlflow.local dagster.local n8n.local
+::1 chat.local llm.local agent.local mlflow.local dagster.local n8n.local
 ::1 langfuse.local grafana.local minio.local qdrant.local argocd.local
 ```
 
@@ -360,6 +365,51 @@ Use `::1`, not `127.0.0.1`. Traefik runs on the WSL host's ports 80/443 ([traefi
 ### 6.8 Thermal settings (optional)
 
 See [Thermal Management](#12-thermal-management). [`windows-thermal.ps1`](infra/scripts/host/windows-thermal.ps1) caps the CPU at 80%; the Ollama cap is part of 6.3.
+
+
+### 6.9 LLM gateway (LiteLLM): switching and adding models
+
+[`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml) runs [LiteLLM](https://docs.litellm.ai/) as an OpenAI-compatible gateway at `http://litellm.llm.svc.cluster.local:4000/v1` (API docs at http://llm.local). Clients ask for an **alias**, and the ConfigMap maps each alias to a real model:
+
+| Alias | Model | Used by |
+|---|---|---|
+| `chat-default` | `ollama_chat/llama3.2:3b` | Open WebUI (default model), later the agent and n8n |
+| `embed-default` | `ollama/nomic-embed-text` | Open WebUI RAG embeddings |
+
+Every new service should use the OpenAI client with `base_url=http://litellm.llm.svc.cluster.local:4000/v1`, any API key and an alias, never an Ollama URL or model name. Then changing a model is one line in one file.
+
+**Switch a model** (e.g. make `chat-default` use Qwen):
+
+```bash
+bash infra/scripts/host/02-pull-models.sh qwen2.5:3b     # on the WSL host
+# edit infra/k3s/llm/litellm.yaml: chat-default -> model: ollama_chat/qwen2.5:3b
+make llm-reload                                           # apply + restart LiteLLM
+```
+
+**Add a model:** pull it the same way and add a `model_list` entry with a new alias. The file has commented examples (`chat-tools`). It shows up in Open WebUI's model picker after `make llm-reload`.
+
+Changing `embed-default` to another model changes the vectors. Re-index in Open WebUI afterwards (Admin Panel → Settings → Documents → Reindex).
+
+**Test from the command line** (Windows or WSL, needs the `llm.local` hosts entry):
+
+```bash
+curl -s http://llm.local/v1/models
+curl -s http://llm.local/v1/chat/completions -H 'Content-Type: application/json' \
+  -d '{"model":"chat-default","messages":[{"role":"user","content":"Say hi"}]}'
+```
+
+**Existing Open WebUI installs.** Open WebUI reads its connection env vars only on first start and keeps them in its database after that. On an install that predates LiteLLM, set them once by hand:
+- Admin Panel → Settings → Connections: turn off the Ollama API, and add an OpenAI API connection with URL `http://litellm.llm.svc.cluster.local:4000/v1` and key `sk-local`.
+- Admin Panel → Settings → Documents: set the embedding engine to OpenAI, with the same URL and key and the model `embed-default`, then Reindex.
+
+A fresh install (or after `make teardown`) picks all of this up from [`ui/open-webui.yaml`](infra/k3s/ui/open-webui.yaml).
+
+**Other backends** are also just entries in the same file. The file has commented examples for each:
+- **GPU Ollama on Windows** (`chat-gpu`). An integrated GPU such as Intel Arc can't be used from Ollama inside WSL, but Ollama running natively on Windows can try. Use its experimental Vulkan backend (`OLLAMA_VULKAN=1`) or Intel's IPEX-LLM build of Ollama. Set `OLLAMA_HOST=0.0.0.0` on Windows and allow port 11434 from WSL in Windows Firewall. Point `api_base` at the Windows host's IP as seen from WSL, which changes when WSL restarts. The GPU shares system RAM, so it doesn't add memory. Compare `chat-default` and `chat-gpu` speeds in Open WebUI before relying on it.
+- **Hosted models** (`chat-cloud`). Put the API key in a `litellm-keys` Secret, not in Git. This is off by default: enabling it sends prompts off the machine (see [Non-Functional Requirements](#11-non-functional-requirements)).
+- **vLLM** isn't used. It needs a supported GPU, which this laptop doesn't have; on CPU it's slower than Ollama and serves one model per process. If a GPU box becomes available, its OpenAI endpoint is one more entry (`model: hosted_vllm/<model>`, `api_base: http://<host>:8000/v1`).
+
+When Langfuse arrives (Week 6), add `success_callback: ["langfuse"]` under `litellm_settings` and every LLM call is traced from this one place.
 
 ---
 
@@ -394,6 +444,7 @@ Deploys to laptop k3s
 |---|---|
 | k3s core | 500 MB |
 | Ollama (3B model, on the WSL host) | 4 GB |
+| LiteLLM gateway | 256 MB (limit 1 GB) |
 | Qdrant | 512 MB |
 | Postgres | 512 MB |
 | MinIO | 512 MB |
@@ -406,13 +457,13 @@ Deploys to laptop k3s
 | Langfuse | 512 MB |
 | Prometheus + Grafana | 768 MB |
 | ArgoCD | 1.3 GB |
-| **Total (core, steady state)** | **~13.3 GB** |
+| **Total (core, steady state)** | **~13.6 GB** |
 | **Peak (during training)** | **up to WSL cap of 18 GB** |
-| **Headroom inside WSL at steady state** | **~4.7 GB** |
+| **Headroom inside WSL at steady state** | **~4.4 GB** |
 
 Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload must set Kubernetes `requests` and `limits`. Ollama sits outside k3s, so its 4 GB counts against the WSL cap but not against pod limits.
 
-> **Why 18 GB, not 24 GB:** on the dev machine Windows uses ~8–15 GB with normal apps open, so a 24 GB WSL cap would overcommit the 32 GB machine and cause paging. At 18 GB the headroom is thin (~4.7 GB), so trim the stack where possible (e.g. ArgoCD core mode, Langfuse v2) and close heavy Windows apps before training runs.
+> **Why 18 GB, not 24 GB:** on the dev machine Windows uses ~8–15 GB with normal apps open, so a 24 GB WSL cap would overcommit the 32 GB machine and cause paging. At 18 GB the headroom is thin (~4.4 GB), so trim the stack where possible (e.g. ArgoCD core mode, Langfuse v2) and close heavy Windows apps before training runs.
 
 ---
 
@@ -440,6 +491,7 @@ Latencies are targets for CPU-only 3B models and should be measured and reported
 | UI | URL |
 |---|---|
 | Chat (Open WebUI) | http://chat.local |
+| LLM gateway (LiteLLM API docs) | http://llm.local |
 | Agent UI (Streamlit) | http://agent.local |
 | MLflow | http://mlflow.local |
 | Dagster | http://dagster.local |
@@ -454,7 +506,7 @@ Latencies are targets for CPU-only 3B models and should be measured and reported
 
 ## 11. Non-Functional Requirements
 
-- **Privacy:** all inference and data stay on the laptop; no external LLM APIs.
+- **Privacy:** all inference and data stay on the laptop; no external LLM APIs. LiteLLM can route to hosted models, but none is configured by default.
 - **Cost:** $0 — only open-source software and GitHub free tier.
 - **Hardware:** runs CPU-only on 32 GB RAM; no GPU dependency.
 - **Reproducibility:** full platform deployable from the repo (`kubectl apply` or ArgoCD sync).
@@ -512,8 +564,10 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 - ✅ ArgoCD GitOps (no inbound access)
 - ✅ GitHub Actions + GHCR (free tier)
 - ✅ MCP-based tools (standard, extensible)
-- ✅ ~13 GB core RAM (fits the 18 GB WSL allocation)
+- ✅ ~13.6 GB core RAM (fits the 18 GB WSL allocation)
 - ✅ Ollama on the WSL host, not in k3s (simpler, one copy of the models)
+- ✅ LiteLLM gateway in front of all models: apps use aliases, so switching or adding a model is a config change
+- ✅ No vLLM (needs a supported GPU; on CPU it's slower than Ollama)
 - ✅ 8-week build plan
 - ✅ Fully self-hosted, private, free
 
@@ -532,7 +586,9 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 3B model quality | Tool-calling reliability on 3B models is limited; keep tool schemas small and test `qwen2.5:3b` for function calling. |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
-| Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.7 GB. Watch it as services are added. |
+| Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.4 GB. Watch it as services are added. |
+| LiteLLM image | Tracks `main-stable`; pin a `main-vX.Y.Z-stable` tag in [`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml) once one is verified on the platform machine. No master key: fine while the API is reachable only from this PC, but add one (a Secret) before exposing it. |
+| Open WebUI config | Env vars seed settings on first start only; an existing install needs the connection switched to LiteLLM by hand ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). |
 | Pod restart counts | Grow with every `down`/`up` (node restarts count). Use `make status` for state since the current start. |
 
 ---
