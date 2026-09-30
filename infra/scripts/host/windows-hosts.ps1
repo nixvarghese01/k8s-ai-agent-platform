@@ -8,12 +8,10 @@ $ErrorActionPreference = 'Stop'
 $hosts = "$env:SystemRoot\System32\drivers\etc\hosts"
 $begin = '# BEGIN local-ai-platform'
 $end = '# END local-ai-platform'
-$block = @(
-    $begin
-    '::1 chat.local llm.local agent.local mlflow.local dagster.local n8n.local'
-    '::1 langfuse.local grafana.local minio.local qdrant.local argocd.local'
-    $end
-)
+# One name per line: Windows treats extra names on a line as aliases (CNAMEs) of the first,
+# and those don't resolve for ::1 (only the first name on each line would work).
+$names = 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'langfuse', 'grafana', 'minio', 'qdrant', 'argocd'
+$block = @($begin) + ($names | ForEach-Object { "::1 $_.local" }) + @($end)
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)

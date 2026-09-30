@@ -357,9 +357,20 @@ Scripts only start and stop services; what runs inside k3s comes from the manife
 Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin PowerShell, from the repo folder). It backs up the hosts file, adds the lines below between `# BEGIN/END local-ai-platform` markers, and is safe to re-run; `-Remove` takes them out again. Manual equivalent, in `C:\Windows\System32\drivers\etc\hosts` (as admin):
 
 ```text
-::1 chat.local llm.local agent.local mlflow.local dagster.local n8n.local
-::1 langfuse.local grafana.local minio.local qdrant.local argocd.local
+::1 chat.local
+::1 llm.local
+::1 agent.local
+::1 mlflow.local
+::1 dagster.local
+::1 n8n.local
+::1 langfuse.local
+::1 grafana.local
+::1 minio.local
+::1 qdrant.local
+::1 argocd.local
 ```
+
+One name per line: Windows treats extra names on a line as aliases of the first, and those don't resolve for `::1`.
 
 Use `::1`, not `127.0.0.1`. Traefik runs on the WSL host's ports 80/443 ([traefik-config.yaml](infra/k3s/ingress/traefik-config.yaml)), and WSL forwards those to Windows' IPv6 localhost only. `http://localhost/` works for the same reason.
 
