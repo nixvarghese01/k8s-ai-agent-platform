@@ -6,6 +6,16 @@ export KUBECONFIG=${KUBECONFIG:-~/.kube/config}
 cd "$(dirname "$0")/../.."
 
 kubectl apply -f infra/k3s/namespaces.yaml
+
+# Secrets live only in the cluster, never in Git. Create each one once; keep it on re-deploy.
+set +x
+if ! kubectl -n ui get secret open-webui-secret >/dev/null 2>&1; then
+  # Signs Open WebUI login sessions; a stable key keeps users logged in across restarts
+  kubectl -n ui create secret generic open-webui-secret \
+    --from-literal=WEBUI_SECRET_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+fi
+set -x
+
 kubectl apply -R -f infra/k3s/
 kubectl -n llm rollout status deploy/litellm --timeout=10m
 kubectl -n storage rollout status deploy/qdrant --timeout=10m

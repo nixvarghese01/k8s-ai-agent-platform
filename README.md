@@ -410,11 +410,7 @@ curl -s http://llm.local/v1/chat/completions -H 'Content-Type: application/json'
   -d '{"model":"chat-default","messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
-**Existing Open WebUI installs.** Open WebUI reads its connection env vars only on first start and keeps them in its database after that. On an install that predates LiteLLM, set them once by hand:
-- Admin Panel → Settings → Connections: turn off the Ollama API, and add an OpenAI API connection with URL `http://litellm.llm.svc.cluster.local:4000/v1` and key `sk-local`.
-- Admin Panel → Settings → Documents: set the embedding engine to OpenAI, with the same URL and key and the model `embed-default`, then Reindex.
-
-A fresh install (or after `make teardown`) picks all of this up from [`ui/open-webui.yaml`](infra/k3s/ui/open-webui.yaml).
+**Open WebUI settings come from its manifest.** [`ui/open-webui.yaml`](infra/k3s/ui/open-webui.yaml) sets `ENABLE_PERSISTENT_CONFIG=false`, so Open WebUI applies its env vars (LiteLLM connection, embeddings, sign-up off) on every start and ignores the settings saved in its database. Changes made in the Admin Panel last only until the pod restarts; to keep one, add the matching env var to the manifest. Accounts, chats and documents are still stored on its volume. Its session-signing key is the `open-webui-secret` Secret, which [`deploy.sh`](infra/scripts/deploy.sh) creates once, so restarts don't log anyone out.
 
 **Other backends** are also just entries in the same file. The file has commented examples for each:
 - **GPU Ollama on Windows** (`chat-gpu`). An integrated GPU such as Intel Arc can't be used from Ollama inside WSL, but Ollama running natively on Windows can try. Use its experimental Vulkan backend (`OLLAMA_VULKAN=1`) or Intel's IPEX-LLM build of Ollama. Set `OLLAMA_HOST=0.0.0.0` on Windows and allow port 11434 from WSL in Windows Firewall. Point `api_base` at the Windows host's IP as seen from WSL, which changes when WSL restarts. The GPU shares system RAM, so it doesn't add memory. Compare `chat-default` and `chat-gpu` speeds in Open WebUI before relying on it.
@@ -599,8 +595,8 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
 | Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.4 GB. Watch it as services are added. |
-| LiteLLM image | Tracks `main-stable`; pin a `main-vX.Y.Z-stable` tag in [`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml) once one is verified on the platform machine. No master key: fine while the API is reachable only from this PC, but add one (a Secret) before exposing it. |
-| Open WebUI config | Env vars seed settings on first start only; an existing install needs the connection switched to LiteLLM by hand ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). |
+| LiteLLM image | **Pinned** to `v1.103.1` (tag + digest) in [`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml). Upgrade deliberately: change the tag, apply, run `make status`. No master key: fine while the API is reachable only from this PC, but add one (a Secret) before exposing it. |
+| Open WebUI config | **Resolved:** settings come from env vars on every start (`ENABLE_PERSISTENT_CONFIG=false`), so Admin Panel changes don't survive a restart ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). |
 | Pod restart counts | Grow with every `down`/`up` (node restarts count). Use `make status` for state since the current start. |
 
 ---

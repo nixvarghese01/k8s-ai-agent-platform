@@ -37,9 +37,22 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-          # These seed Open WebUI's settings on first start only; after that its database wins
-          # (README §6.9 covers switching an existing install).
+          # Settings come from these env vars on every start, not from Open WebUI's database:
+          # this file is the source of truth. Admin-panel changes last until the next restart;
+          # to keep one, add its env var here. Users, chats and documents still persist.
           env:
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "false"
+            # Accounts: the first one created is admin; nobody else can sign up
+            - name: ENABLE_SIGNUP
+              value: "false"
+            # Created by infra/scripts/deploy.sh; without it the key is regenerated on every
+            # start and everyone is logged out
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: open-webui-secret
+                  key: WEBUI_SECRET_KEY
             # All models come through LiteLLM (llm/litellm.yaml), not straight from Ollama
             - name: ENABLE_OLLAMA_API
               value: "false"

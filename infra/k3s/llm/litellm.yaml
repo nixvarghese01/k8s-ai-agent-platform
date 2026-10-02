@@ -70,8 +70,9 @@ spec:
     spec:
       containers:
         - name: litellm
-          # Stable channel. Pin a release (main-vX.Y.Z-stable) once one is verified here.
-          image: ghcr.io/berriai/litellm:main-stable
+          # Pinned release (same digest main-stable had when verified, 2026-10-02).
+          # To upgrade: pick a newer vX.Y.Z tag, apply, then run `make status`.
+          image: ghcr.io/berriai/litellm:v1.103.1@sha256:df15400b5b80925c45d3fd53f8f7a6c0eaa8a25a86833e1b358002e129018943
           args: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
           ports:
             - name: http
