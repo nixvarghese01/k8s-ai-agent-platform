@@ -1,0 +1,62 @@
+# Agent UI (Streamlit) at http://agent.local: chat with the file agent (agent/agent.yaml) and
+# see its tool calls. Image built locally by infra/scripts/build-images.sh (`make images`).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-ui
+  namespace: ui
+  labels:
+    app: agent-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-ui
+  template:
+    metadata:
+      labels:
+        app: agent-ui
+    spec:
+      containers:
+        - name: agent-ui
+          image: local-ai/agent-ui:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8501
+          env:
+            - name: AGENT_URL
+              value: http://agent.agent.svc.cluster.local:8000
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /_stcore/health
+              port: http
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-ui
+  namespace: ui
+spec:
+  selector:
+    app: agent-ui
+  ports:
+    - name: http
+      port: 8501
+      targetPort: http

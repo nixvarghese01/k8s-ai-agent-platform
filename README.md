@@ -145,7 +145,9 @@ local-ai-platform/
 │   │   ├── mlops/mlflow.yaml
 │   │   ├── mlops/dagster.yaml
 │   │   ├── mlops/bentoml.yaml
+│   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── ui/open-webui.yaml
+│   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.local)
 │   │   ├── automation/n8n.yaml
 │   │   ├── observability/langfuse.yaml
 │   │   ├── ingress/ingresses.yaml
@@ -167,18 +169,17 @@ local-ai-platform/
 │       ├── platform.ps1    # up / down / status from Windows
 │       ├── platform.sh     # up / down / status inside Ubuntu
 │       ├── deploy.sh
+│       ├── build-images.sh # build our images, load them into k3s (make images)
 │       ├── teardown.sh     # delete all workloads and their volumes
 │       └── status.sh
-├── agent/
+├── agent/                  # LangGraph agent (6.10)
 │   ├── Dockerfile
 │   ├── requirements.txt
-│   ├── main.py
-│   ├── graph.py
-│   ├── state.py
-│   ├── tools/
-│   └── prompts/
+│   ├── main.py             # FastAPI: POST /chat, GET /tools
+│   ├── graph.py            # model -> tools loop; tools come from MCP servers
+│   └── prompts/system.md
 ├── mcp-servers/
-│   ├── filesystem/
+│   ├── filesystem/         # read-only list/search/read over one folder (6.10)
 │   ├── web-search/
 │   ├── fetch/
 │   ├── memory/
@@ -192,9 +193,9 @@ local-ai-platform/
 ├── serving/
 │   └── service.py
 ├── n8n/workflows/
-├── ui/
+├── ui/                     # Streamlit agent UI
 ├── data/
-├── tests/
+├── tests/                  # pytest, no cluster or LLM needed (make test)
 ├── docs/
 └── docker-compose.yml      # optional: run the agent stack without k3s for fast local dev
 ```
@@ -330,6 +331,7 @@ Script: [`04-install-docker.sh`](infra/scripts/host/04-install-docker.sh) (root)
 Inside Ubuntu, from the repo (`cd /mnt/e/Github/local-ai-platform`):
 
 ```bash
+make images        # = bash infra/scripts/build-images.sh: build the agent, MCP and UI images (first time, and after code changes)
 make deploy        # = bash infra/scripts/deploy.sh
 ```
 
@@ -387,6 +389,7 @@ See [Thermal Management](#12-thermal-management). [`windows-thermal.ps1`](infra/
 |---|---|---|
 | `chat-default` | `ollama_chat/llama3.2:3b` | Open WebUI (default model), later the agent and n8n |
 | `embed-default` | `ollama/nomic-embed-text` | Open WebUI RAG embeddings |
+| `chat-tools` | `ollama_chat/qwen2.5:3b` (`num_ctx: 8192`) | The file agent (tool calling) |
 
 Every new service should use the OpenAI client with `base_url=http://litellm.llm.svc.cluster.local:4000/v1`, any API key and an alias, never an Ollama URL or model name. Then changing a model is one line in one file.
 
@@ -418,6 +421,30 @@ curl -s http://llm.local/v1/chat/completions -H 'Content-Type: application/json'
 - **vLLM** isn't used. It needs a supported GPU, which this laptop doesn't have; on CPU it's slower than Ollama and serves one model per process. If a GPU box becomes available, its OpenAI endpoint is one more entry (`model: hosted_vllm/<model>`, `api_base: http://<host>:8000/v1`).
 
 When Langfuse arrives (Week 6), add `success_callback: ["langfuse"]` under `litellm_settings` and every LLM call is traced from this one place.
+
+### 6.10 File agent (LangGraph + filesystem MCP)
+
+Open **http://agent.local**, ask about your files, and expand each 🔧 line to see which tool the agent called and what it got back.
+
+```text
+agent.local ─► agent-ui (Streamlit, ui) ─► agent (LangGraph + FastAPI, agent) ─► LiteLLM chat-tools ─► qwen2.5:3b
+                                                  │
+                                                  └─ MCP streamable HTTP ─► mcp-filesystem ─► E:\ai-files (read-only)
+```
+
+| Piece | Code | Manifest |
+|---|---|---|
+| Filesystem MCP server: `list_dir`, `search_files`, `read_file` | [`mcp-servers/filesystem/`](mcp-servers/filesystem/server.py) | [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
+| Agent: LangGraph loop model → tools → model; `POST /chat`, `GET /tools` | [`agent/`](agent/graph.py) | [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
+| UI | [`ui/app.py`](ui/app.py) | [`ui/agent-ui.yaml`](infra/k3s/ui/agent-ui.yaml) |
+
+**The shared folder** is `E:\ai-files` (`/mnt/e/ai-files` in WSL). Put text files there (Markdown, notes, code, CSV); the agent sees changes immediately. It's mounted read-only and every path is checked against the folder, so the agent can't write anything or reach other files. To share another folder, change the `hostPath` in [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) and re-apply.
+
+**Changing the code:** edit, `make test`, then `make images` (or `bash infra/scripts/build-images.sh agent` for one image). The script builds with Docker, imports the image into k3s and restarts the deployment. Images are tagged `local-ai/<name>:dev` with `imagePullPolicy: Never`; GHCR comes with CI in Week 7.
+
+**Adding a tool:** run another MCP server (streamable HTTP) and add it to `MCP_SERVERS` in [`agent/agent.yaml`](infra/k3s/agent/agent.yaml). The agent loads every server's tools on start; no agent code changes.
+
+**What to expect from a 3B model on CPU** (reference machine): 2 s for a question that needs no tool, 10–25 s for one or two tool calls. The tools are built to forgive small-model mistakes: `list_dir` shows two levels at once, and `read_file("readme")` finds `README.md`. The system prompt ([`agent/prompts/system.md`](agent/prompts/system.md)) spells out find → read → answer. Answers can still pad facts with loose summary; check the 🔧 results. Conversations live in the agent's memory and are lost when its pod restarts.
 
 ---
 
@@ -500,7 +527,7 @@ Latencies are targets for CPU-only 3B models and should be measured and reported
 |---|---|
 | Chat (Open WebUI) | http://chat.local |
 | LLM gateway (LiteLLM API docs) | http://llm.local |
-| Agent UI (Streamlit) | http://agent.local |
+| Agent UI (Streamlit, file agent) | http://agent.local |
 | MLflow | http://mlflow.local |
 | Dagster | http://dagster.local |
 | n8n | http://n8n.local |
@@ -547,8 +574,8 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 
 | Week | Focus | Deliverable |
 |---|---|---|
-| 1 | k3s + Ollama + Qdrant | Chat works |
-| 2 | LangGraph + filesystem MCP | File agent |
+| 1 | k3s + Ollama + Qdrant | Chat works ✅ |
+| 2 | LangGraph + filesystem MCP | File agent ✅ |
 | 3 | RAG (LlamaIndex + Qdrant) | Doc Q&A |
 | 4 | MLflow + Dagster + training | Model trained |
 | 5 | BentoML + agent integration | Model exposed as agent tool |
@@ -591,7 +618,8 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | GHCR 500 MB limit | Applies to private packages; keep images small (slim bases, multi-stage builds) and run `cleanup.yml`. Public images are free. |
 | Voice/OCR tooling | Not yet specified — candidates: faster-whisper (STT), Piper (TTS), Tesseract / PaddleOCR (OCR). |
 | Email/Calendar access | Requires OAuth credentials for the chosen provider; store as Kubernetes Secrets. |
-| 3B model quality | Tool-calling reliability on 3B models is limited; keep tool schemas small and test `qwen2.5:3b` for function calling. |
+| 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent check, or the questions in 6.10). |
+| Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
 | Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.4 GB. Watch it as services are added. |

@@ -1,5 +1,5 @@
 #!/bin/bash
-# README §6.5: apply every manifest under infra/k3s and wait for the Week 1 workloads.
+# README §6.5: apply every manifest under infra/k3s and wait for the workloads.
 # Run inside Ubuntu from the repo root:  bash infra/scripts/deploy.sh
 set -euxo pipefail
 export KUBECONFIG=${KUBECONFIG:-~/.kube/config}
@@ -20,4 +20,8 @@ kubectl apply -R -f infra/k3s/
 kubectl -n llm rollout status deploy/litellm --timeout=10m
 kubectl -n storage rollout status deploy/qdrant --timeout=10m
 kubectl -n ui rollout status deploy/open-webui --timeout=15m
+# Built locally: run `make images` first (infra/scripts/build-images.sh)
+kubectl -n agent rollout status deploy/mcp-filesystem --timeout=5m
+kubectl -n agent rollout status deploy/agent --timeout=5m
+kubectl -n ui rollout status deploy/agent-ui --timeout=5m
 kubectl get pods,pvc,ingress -A --field-selector metadata.namespace!=kube-system

@@ -56,3 +56,22 @@ spec:
                 name: qdrant
                 port:
                   name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent
+  namespace: ui
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: agent.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-ui
+                port:
+                  name: http

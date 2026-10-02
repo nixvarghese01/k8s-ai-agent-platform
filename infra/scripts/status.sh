@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health check for the host services and Week 1 workloads. Read-only except a throwaway
+# Health check for the host services and platform workloads. Read-only except a throwaway
 # Qdrant collection (verify_test) that it creates and deletes.
 # Run inside Ubuntu:  bash infra/scripts/status.sh
 export KUBECONFIG=${KUBECONFIG:-~/.kube/config}
@@ -49,6 +49,14 @@ print('chat  %-30s %.1fs' % (d['choices'][0]['message']['content'].strip()[:30],
 d, s = post('embeddings', {'model': 'embed-default', 'input': 'hello'})
 print('embed dim=%-26d %.1fs' % (len(d['data'][0]['embedding']), s))"
 
+echo "== agent (chat-tools + filesystem MCP; one question that needs a tool)"
+kubectl -n ui exec deploy/agent-ui -- python -c "
+import httpx
+A = 'http://agent.agent.svc.cluster.local:8000'
+print('tools', [t['name'] for t in httpx.get(A + '/tools', timeout=60).json()['tools']])
+d = httpx.post(A + '/chat', json={'message': 'List the files in my shared folder.'}, timeout=900).json()
+print('calls', [s['tool'] for s in d['steps']], '%.1fs' % d['seconds'])"
+
 echo "== qdrant write/read"
 Q=http://$(kubectl -n storage get svc qdrant -o jsonpath='{.spec.clusterIP}'):6333
 curl -s -X PUT "$Q/collections/verify_test" -H 'Content-Type: application/json' -d '{"vectors":{"size":4,"distance":"Cosine"}}'; echo
@@ -58,7 +66,7 @@ curl -s -X DELETE "$Q/collections/verify_test"; echo
 
 echo "== ingress (via WSL IP)"
 IP=$(hostname -I | awk '{print $1}'); echo "wsl ip $IP"
-for h in chat.local llm.local qdrant.local; do
+for h in chat.local llm.local qdrant.local agent.local; do
   curl -s -o /dev/null -w "$h -> %{http_code}\n" -H "Host: $h" "http://$IP/"
 done
 

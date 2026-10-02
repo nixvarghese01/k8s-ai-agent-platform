@@ -27,10 +27,18 @@ data:
         model_info:
           mode: embedding
 
+      # Tool calling, used by the agent. qwen2.5:3b calls tools far more reliably than
+      # llama3.2:3b (README §15). num_ctx: room for tool results (Ollama's default is smaller).
+      - model_name: chat-tools
+        litellm_params:
+          model: ollama_chat/qwen2.5:3b
+          api_base: http://ollama.llm.svc.cluster.local:11434
+          num_ctx: 8192
+
       # More models: `ollama pull <name>` on the host, then add an entry like this one.
-      # - model_name: chat-tools          # better at function calling (README §15)
+      # - model_name: chat-coder
       #   litellm_params:
-      #     model: ollama_chat/qwen2.5:3b
+      #     model: ollama_chat/qwen2.5-coder:3b
       #     api_base: http://ollama.llm.svc.cluster.local:11434
 
       # A second backend, e.g. Ollama on Windows using the GPU (README §6.9). Use the

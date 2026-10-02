@@ -1,0 +1,147 @@
+# Week 2 file agent (README §6.10): the LangGraph agent API and the filesystem MCP server.
+# Images are built locally and loaded into k3s by infra/scripts/build-images.sh (`make images`),
+# so imagePullPolicy is Never. The UI is ui/agent-ui.yaml.
+#
+# Filesystem MCP server: read-only tools over one folder on the WSL host.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-filesystem
+  namespace: agent
+  labels:
+    app: mcp-filesystem
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-filesystem
+  template:
+    metadata:
+      labels:
+        app: mcp-filesystem
+    spec:
+      containers:
+        - name: mcp-filesystem
+          image: local-ai/mcp-filesystem:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: FILES_ROOT
+              value: /data
+            - name: MAX_READ_CHARS
+              value: "8000" # ~2k tokens, so a file fits in chat-tools' context with room to spare
+          volumeMounts:
+            - name: files
+              mountPath: /data
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+      volumes:
+        # The agent's shared folder: E:\ai-files on Windows. Change both here to share another one.
+        - name: files
+          hostPath:
+            path: /mnt/e/ai-files
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-filesystem
+  namespace: agent
+spec:
+  selector:
+    app: mcp-filesystem
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# Agent API: http://agent.agent.svc.cluster.local:8000 (POST /chat, GET /tools)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: agent
+  labels:
+    app: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      containers:
+        - name: agent
+          image: local-ai/agent:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: LLM_BASE_URL
+              value: http://litellm.llm.svc.cluster.local:4000/v1
+            - name: LLM_MODEL
+              value: chat-tools
+            # Add an MCP server here and restart the agent; no code change needed
+            - name: MCP_SERVERS
+              value: |
+                {"filesystem": {"url": "http://mcp-filesystem.agent.svc.cluster.local:8000/mcp"}}
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent
+  namespace: agent
+spec:
+  selector:
+    app: agent
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
