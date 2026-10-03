@@ -41,11 +41,13 @@ spec:
             httpGet:
               path: /_stcore/health
               port: http
+            initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /_stcore/health
               port: http
+            initialDelaySeconds: 30
             periodSeconds: 30
 ---
 apiVersion: v1

@@ -51,11 +51,13 @@ spec:
             httpGet:
               path: /health
               port: http
+            initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: http
+            initialDelaySeconds: 30
             periodSeconds: 30
       volumes:
         # The agent's shared folder: E:\ai-files on Windows. Change both here to share another one.
@@ -126,11 +128,13 @@ spec:
             httpGet:
               path: /health
               port: http
+            initialDelaySeconds: 15
             periodSeconds: 10
           livenessProbe:
             httpGet:
               path: /health
               port: http
+            initialDelaySeconds: 30
             periodSeconds: 30
 ---
 apiVersion: v1
