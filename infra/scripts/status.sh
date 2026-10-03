@@ -15,9 +15,9 @@ done
 
 echo "== cluster"
 kubectl get nodes --no-headers
-# Kubernetes' RESTARTS counter includes every WSL/k3s stop since the pod was created, so show
-# the state since this start instead. LAST-EXIT "Unknown" = node was shut down (normal);
-# "Error" / "OOMKilled" after STARTED = a real crash.
+# `platform.sh up` starts fresh pods, so a LAST-EXIT here happened in this run:
+# "Error" / "OOMKilled" = a real crash. ("Unknown" = node shut down; only seen if k3s was
+# started without platform.sh.)
 echo "booted $(date -u -d "$(uptime -s)" +%Y-%m-%dT%H:%M:%SZ) (times below are UTC)"
 kubectl get pods -A --field-selector=status.phase!=Succeeded -o custom-columns='NAMESPACE:.metadata.namespace,POD:.metadata.name,PHASE:.status.phase,READY:.status.containerStatuses[*].ready,STARTED:.status.containerStatuses[*].state.running.startedAt,LAST-EXIT:.status.containerStatuses[*].lastState.terminated.reason'
 
@@ -66,7 +66,7 @@ curl -s -X DELETE "$Q/collections/verify_test"; echo
 
 echo "== ingress (via WSL IP)"
 IP=$(hostname -I | awk '{print $1}'); echo "wsl ip $IP"
-for h in chat.local llm.local qdrant.local agent.local; do
+for h in chat.local llm.local qdrant.local agent.local headlamp.local; do
   curl -s -o /dev/null -w "$h -> %{http_code}\n" -H "Host: $h" "http://$IP/"
 done
 

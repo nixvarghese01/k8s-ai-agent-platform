@@ -1,0 +1,106 @@
+# Headlamp at http://headlamp.local: a web UI for the cluster (pods, logs, events, shell,
+# resource usage). It logs in with a service-account token, not a password: from Windows run
+# `.\infra\scripts\platform.ps1 headlamp-token` (copies it), or `make headlamp-token` inside
+# Ubuntu (README §6.11). The token is cluster-admin, so treat it like a root password. Fine while
+# headlamp.local is reachable only from this PC (WSL NAT); use a read-only role before exposing it.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: headlamp
+  namespace: ui
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: headlamp-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: ServiceAccount
+    name: headlamp
+    namespace: ui
+---
+# Long-lived login token for the headlamp ServiceAccount; Kubernetes fills in .data.token.
+# Delete the Secret and re-apply this file to rotate it.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: headlamp-token
+  namespace: ui
+  annotations:
+    kubernetes.io/service-account.name: headlamp
+type: kubernetes.io/service-account-token
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: headlamp
+  namespace: ui
+  labels:
+    app: headlamp
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: headlamp
+  template:
+    metadata:
+      labels:
+        app: headlamp
+    spec:
+      serviceAccountName: headlamp
+      containers:
+        - name: headlamp
+          # Pinned like LiteLLM: change tag + digest deliberately, apply, check headlamp.local
+          image: ghcr.io/headlamp-k8s/headlamp:v0.45.0@sha256:db3f0e0fc58d358d41daa3fe7fc852437552c7ee873c3645470f7b86a8e0db49
+          args:
+            - -in-cluster
+            - -in-cluster-context-name=local-ai
+            - -plugins-dir=/headlamp/plugins
+          ports:
+            - name: http
+              containerPort: 4466
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 100
+            runAsGroup: 101
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: headlamp
+  namespace: ui
+spec:
+  selector:
+    app: headlamp
+  ports:
+    - name: http
+      port: 4466
+      targetPort: http

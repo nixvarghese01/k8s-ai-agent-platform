@@ -2,10 +2,12 @@
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 
-.PHONY: up up-docker down restart status deploy images test llm-reload teardown
+.PHONY: up local-up up-docker down local-down restart status deploy images test llm-reload headlamp-token teardown
 
 up:        ## start Ollama + k3s and wait until every pod is Ready
 	bash infra/scripts/platform.sh up
+
+local-up: up  ## alias of up, same name as .\local-up on Windows
 
 up-docker: ## same as up, plus Docker
 	bash infra/scripts/platform.sh up --docker
@@ -13,7 +15,9 @@ up-docker: ## same as up, plus Docker
 down:      ## stop all pods, k3s, Ollama and Docker
 	bash infra/scripts/platform.sh down
 
-restart:
+local-down: down  ## alias of down, same name as .\local-down on Windows
+
+restart:   ## down, then up (fresh pods)
 	bash infra/scripts/platform.sh restart
 
 status:    ## health check of services, pods, models, ingress
@@ -33,6 +37,9 @@ llm-reload: ## apply llm/litellm.yaml and restart LiteLLM to load its model list
 	kubectl apply -f infra/k3s/llm/litellm.yaml
 	kubectl -n llm rollout restart deploy/litellm
 	kubectl -n llm rollout status deploy/litellm --timeout=5m
+
+headlamp-token: ## print the Headlamp login token (cluster-admin; README §6.11)
+	@kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d; echo
 
 teardown:  ## delete every workload AND its volumes (chat history, vectors); asks first
 	bash infra/scripts/teardown.sh

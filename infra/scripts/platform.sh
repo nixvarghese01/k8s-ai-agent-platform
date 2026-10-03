@@ -2,7 +2,8 @@
 # Start/stop the platform's host services inside Ubuntu. Workloads themselves come from
 # manifests (deploy.sh now, ArgoCD later); this script never deploys anything.
 #
-#   platform.sh up [--docker]   start Ollama + k3s (and Docker), wait until every pod is Ready
+#   platform.sh up [--docker]   start Ollama + k3s (and Docker), replace the old pods with
+#                               fresh ones, wait until every pod is Ready
 #   platform.sh down            stop all pods cleanly, then k3s, Ollama and Docker
 #   platform.sh status          run status.sh
 #   platform.sh restart         down, then up
@@ -24,6 +25,12 @@ up() {
   echo "== waiting for the k3s node"
   until kubectl get nodes >/dev/null 2>&1; do sleep 2; done
   kubectl wait --for=condition=Ready node --all --timeout=180s
+
+  # k3s revives the previous run's pods, so RESTARTS and AGE pile up across every down/up.
+  # Replace them instead: their Deployments create new pods (restarts 0). Data lives on
+  # volumes and survives; completed one-shot pods (helm-install-*) are left alone.
+  echo "== replacing pods from the previous run"
+  kubectl delete pods -A --field-selector=status.phase!=Succeeded --grace-period=5 --wait=true
 
   echo "== waiting for pods"
   # Completed one-shot pods (e.g. helm-install-traefik) never become Ready, so skip them

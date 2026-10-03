@@ -64,6 +64,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | Tuning | Optuna | Hyperparameter optimisation |
 | Drift | Evidently | Data / model drift reports |
 | UI | Open WebUI + custom Streamlit | Chat UI and agent UI |
+| Cluster UI | Headlamp | Web dashboard for pods, logs, events and resource usage |
 | Automation | n8n | Scheduled and event-driven workflows |
 | LLM Observability | Langfuse | Prompt/response traces, latency, cost |
 | Metrics | Prometheus + Grafana | Cluster and service metrics |
@@ -127,6 +128,8 @@ All LLM calls (via LiteLLM) ──► Langfuse (traces)     All pods ──► P
 local-ai-platform/
 ├── README.md
 ├── LICENSE                 # MIT
+├── local-up.ps1            # .\local-up: start the platform from Windows (wraps platform.ps1 up)
+├── local-down.ps1          # .\local-down: stop it and shut Ubuntu down (wraps platform.ps1 down)
 ├── Makefile                # make up / down / status / deploy / llm-reload (inside Ubuntu)
 ├── .gitignore              # also keeps machine-specific files (SYSTEM_*.md, DEVICE_LOG.md) local
 ├── .github/workflows/
@@ -148,6 +151,7 @@ local-ai-platform/
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── ui/open-webui.yaml
 │   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.local)
+│   │   ├── ui/headlamp.yaml      # Kubernetes dashboard (headlamp.local)
 │   │   ├── automation/n8n.yaml
 │   │   ├── observability/langfuse.yaml
 │   │   ├── ingress/ingresses.yaml
@@ -345,14 +349,15 @@ After [`05-on-demand-services.sh`](infra/scripts/host/05-on-demand-services.sh) 
 
 | From Windows (PowerShell, repo folder) | Inside Ubuntu (repo folder) | What it does |
 |---|---|---|
-| `.\infra\scripts\platform.ps1 up` | `make up` | Start Ollama + k3s, wait until every pod is Ready, print URLs |
-| `.\infra\scripts\platform.ps1 up -Docker` | `make up-docker` | Same, plus Docker (the first `docker` command also starts it by itself) |
-| `.\infra\scripts\platform.ps1 down` | `make down` | Stop all pods cleanly (`k3s-killall.sh`), then k3s, Ollama, Docker. From Windows it also shuts Ubuntu down to free its RAM (skip with `-KeepWsl`; this closes open Ubuntu terminals) |
+| `.\local-up` (or `.\infra\scripts\platform.ps1 up`) | `make local-up` / `make up` | Start Ollama + k3s, replace the previous run's pods with fresh ones, wait until every pod is Ready, print URLs |
+| `.\local-up -Docker` | `make up-docker` | Same, plus Docker (the first `docker` command also starts it by itself) |
+| `.\local-down` (or `.\infra\scripts\platform.ps1 down`) | `make local-down` / `make down` | Stop all pods cleanly (`k3s-killall.sh`), then k3s, Ollama, Docker. From Windows it also shuts Ubuntu down to free its RAM (skip with `-KeepWsl`; this closes open Ubuntu terminals) |
+| `.\infra\scripts\platform.ps1 restart` | `make restart` | `down` then `up` in one go. From Windows Ubuntu is shut down in between too (skip with `-KeepWsl`), so it's a full cold restart with fresh pods |
 | `.\infra\scripts\platform.ps1 status` | `make status` | Health check: services, pods since this start, models, LiteLLM chat + embedding, Qdrant, ingress |
 
 Scripts only start and stop services; what runs inside k3s comes from the manifests. Run [`windows-wsl-idle.ps1`](infra/scripts/host/windows-wsl-idle.ps1) once (then `wsl --shutdown`): without `instanceIdleTimeout=-1` / `vmIdleTimeout=-1`, WSL shuts Ubuntu down ~30 s after the last terminal closes, taking k3s with it.
 
-> A pod's `RESTARTS` count goes up on every `down`/`up`, because Kubernetes counts node shutdowns as restarts. `status` shows state since the current start instead: `LAST-EXIT Unknown` means a shutdown; `Error` or `OOMKilled` means a real crash.
+> **Every `up` starts fresh pods.** k3s would otherwise revive the previous run's pods, so `RESTARTS` and `AGE` would pile up across every `down`/`up`. `up` deletes them once the node is Ready and their Deployments create new ones (`RESTARTS 0`). Data on volumes (Open WebUI chats and accounts, Qdrant vectors) and the Ollama models are kept; only [`teardown`](infra/scripts/teardown.sh) deletes those. A `RESTARTS` count above 0 now means a real crash during this run.
 
 ### 6.7 Local DNS for `*.local` hostnames
 
@@ -370,6 +375,7 @@ Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin Power
 ::1 minio.local
 ::1 qdrant.local
 ::1 argocd.local
+::1 headlamp.local
 ```
 
 One name per line: Windows treats extra names on a line as aliases of the first, and those don't resolve for `::1`.
@@ -446,6 +452,20 @@ agent.local ─► agent-ui (Streamlit, ui) ─► agent (LangGraph + FastAPI, a
 
 **What to expect from a 3B model on CPU** (reference machine): 2 s for a question that needs no tool, 10–25 s for one or two tool calls. The tools are built to forgive small-model mistakes: `list_dir` shows two levels at once, and `read_file("readme")` finds `README.md`. The system prompt ([`agent/prompts/system.md`](agent/prompts/system.md)) spells out find → read → answer. Answers can still pad facts with loose summary; check the 🔧 results. Conversations live in the agent's memory and are lost when its pod restarts.
 
+### 6.11 Cluster dashboard (Headlamp)
+
+Open **http://headlamp.local** to browse pods, logs, events and resource usage, open a shell in a container, or edit a resource. It's deployed by `make deploy` from [`ui/headlamp.yaml`](infra/k3s/ui/headlamp.yaml) (image pinned by tag + digest, like LiteLLM).
+
+**Logging in:** Headlamp asks for a token, not a password. Copy it with:
+
+| From Windows (PowerShell, repo folder) | Inside Ubuntu (repo folder) |
+|---|---|
+| `.\infra\scripts\platform.ps1 headlamp-token` (copies it to the clipboard; runs as root, so no Ubuntu password is needed) | `make headlamp-token` (prints it) |
+
+The token belongs to the `ui/headlamp` ServiceAccount, which is **cluster-admin**: anyone who has it can change or delete anything in the cluster. That's acceptable while `headlamp.local` is reachable only from this PC (WSL NAT). Before exposing it, bind the ServiceAccount to the read-only `view` ClusterRole instead. To rotate the token: `kubectl -n ui delete secret headlamp-token`, then re-apply the manifest.
+
+New hostname: re-run [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin) to add `headlamp.local`.
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -488,17 +508,18 @@ Deploys to laptop k3s
 | BentoML | 512 MB |
 | LangGraph + MCP servers | 1.5 GB |
 | Open WebUI + Agent UI | 768 MB |
+| Headlamp | 64 MB (limit 256 MB) |
 | n8n | 512 MB |
 | Langfuse | 512 MB |
 | Prometheus + Grafana | 768 MB |
 | ArgoCD | 1.3 GB |
-| **Total (core, steady state)** | **~13.6 GB** |
+| **Total (core, steady state)** | **~13.7 GB** |
 | **Peak (during training)** | **up to WSL cap of 18 GB** |
-| **Headroom inside WSL at steady state** | **~4.4 GB** |
+| **Headroom inside WSL at steady state** | **~4.3 GB** |
 
 Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload must set Kubernetes `requests` and `limits`. Ollama sits outside k3s, so its 4 GB counts against the WSL cap but not against pod limits.
 
-> **Why 18 GB, not 24 GB:** on the dev machine Windows uses ~8–15 GB with normal apps open, so a 24 GB WSL cap would overcommit the 32 GB machine and cause paging. At 18 GB the headroom is thin (~4.4 GB), so trim the stack where possible (e.g. ArgoCD core mode, Langfuse v2) and close heavy Windows apps before training runs.
+> **Why 18 GB, not 24 GB:** on the dev machine Windows uses ~8–15 GB with normal apps open, so a 24 GB WSL cap would overcommit the 32 GB machine and cause paging. At 18 GB the headroom is thin (~4.3 GB), so trim the stack where possible (e.g. ArgoCD core mode, Langfuse v2) and close heavy Windows apps before training runs.
 
 ---
 
@@ -528,6 +549,7 @@ Latencies are targets for CPU-only 3B models and should be measured and reported
 | Chat (Open WebUI) | http://chat.local |
 | LLM gateway (LiteLLM API docs) | http://llm.local |
 | Agent UI (Streamlit, file agent) | http://agent.local |
+| Cluster dashboard (Headlamp) | http://headlamp.local |
 | MLflow | http://mlflow.local |
 | Dagster | http://dagster.local |
 | n8n | http://n8n.local |
@@ -599,7 +621,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 - ✅ ArgoCD GitOps (no inbound access)
 - ✅ GitHub Actions + GHCR (free tier)
 - ✅ MCP-based tools (standard, extensible)
-- ✅ ~13.6 GB core RAM (fits the 18 GB WSL allocation)
+- ✅ ~13.7 GB core RAM (fits the 18 GB WSL allocation)
 - ✅ Ollama on the WSL host, not in k3s (simpler, one copy of the models)
 - ✅ LiteLLM gateway in front of all models: apps use aliases, so switching or adding a model is a config change
 - ✅ No vLLM (needs a supported GPU; on CPU it's slower than Ollama)
@@ -622,10 +644,10 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
-| Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.4 GB. Watch it as services are added. |
+| Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.3 GB. Watch it as services are added. |
 | LiteLLM image | **Pinned** to `v1.103.1` (tag + digest) in [`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml). Upgrade deliberately: change the tag, apply, run `make status`. No master key: fine while the API is reachable only from this PC, but add one (a Secret) before exposing it. |
 | Open WebUI config | **Resolved:** settings come from env vars on every start (`ENABLE_PERSISTENT_CONFIG=false`), so Admin Panel changes don't survive a restart ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). |
-| Pod restart counts | Grow with every `down`/`up` (node restarts count). Use `make status` for state since the current start. |
+| Pod restart counts | **Resolved:** `up` replaces the previous run's pods ([6.6](#66-start-and-stop-the-platform)), so `RESTARTS` counts only crashes in the current run. |
 
 ---
 
