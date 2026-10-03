@@ -24,7 +24,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 7. [CI/CD and GitOps](#7-cicd-and-gitops)
 8. [Resource Budget](#8-resource-budget)
 9. [Workflows (Functional Requirements)](#9-workflows-functional-requirements)
-10. [UI Access](#10-ui-access)
+10. [Endpoints](#10-endpoints)
 11. [Non-Functional Requirements](#11-non-functional-requirements)
 12. [Thermal Management](#12-thermal-management)
 13. [8-Week Build Plan](#13-8-week-build-plan)
@@ -542,10 +542,71 @@ Latencies are targets for CPU-only 3B models and should be measured and reported
 
 ---
 
-## 10. UI Access
+## 10. Endpoints
 
-| UI | URL |
-|---|---|
+Every URL below opens from Windows once the platform is up (`.\local-up`) and the hosts entries exist ([6.7](#67-local-dns-for-local-hostnames)). In PowerShell use `curl.exe`, not `curl` (an alias for `Invoke-WebRequest`).
+
+### 10.1 Open them one by one
+
+Work down the list; each step depends only on the ones above it. If a step fails, run `.\infra\scripts\platform.ps1 status` and check that pod.
+
+| # | Open | You should see | Quick check (PowerShell) |
+|---|---|---|---|
+| 1 | http://localhost:11434 | `Ollama is running` | `curl.exe http://localhost:11434/api/tags` lists `llama3.2:3b`, `qwen2.5:3b`, `nomic-embed-text` |
+| 2 | http://llm.local | LiteLLM's API docs (Swagger) | `curl.exe http://llm.local/v1/models` lists `chat-default`, `chat-tools`, `embed-default` |
+| 3 | http://qdrant.local/dashboard | Qdrant's web UI with the collections list (empty until Week 3) | `curl.exe http://qdrant.local/readyz` → `all shards are ready` |
+| 4 | http://chat.local | Open WebUI login; sign in with your existing account (signup is off). Pick `chat-default` and send "hi" | `curl.exe -o NUL -w "%{http_code}" http://chat.local` → `200` |
+| 5 | http://agent.local | Agent UI. Ask "What files are in my shared folder?" and expand the 🔧 lines (10–25 s on CPU) | `curl.exe -o NUL -w "%{http_code}" http://agent.local` → `200` |
+| 6 | http://headlamp.local | Headlamp asks for a token: run `.\infra\scripts\platform.ps1 headlamp-token` and paste it. Then **Workloads → Pods** shows every pod ([6.11](#611-cluster-dashboard-headlamp)) | `curl.exe -o NUL -w "%{http_code}" http://headlamp.local` → `200` |
+
+A `404` from any `*.local` URL comes from Traefik itself: the hostname resolves but no Ingress matches it (a typo, or that service isn't deployed). A browser "can't reach this site" means the hosts entry is missing.
+
+### 10.2 Endpoint reference (live)
+
+| Service | From Windows | In-cluster (pod to pod) | Useful paths |
+|---|---|---|---|
+| Ollama (on the WSL host) | http://localhost:11434 | `http://ollama.llm.svc.cluster.local:11434` | `/api/version`, `/api/tags` (installed models), `/api/generate`, `/api/chat`, `/api/embed` |
+| LiteLLM gateway | http://llm.local | `http://litellm.llm.svc.cluster.local:4000` | `/` API docs, `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`, `/health/readiness` |
+| Qdrant | http://qdrant.local | `http://qdrant.storage.svc.cluster.local:6333` (REST), `:6334` (gRPC) | `/dashboard`, `/collections`, `/readyz` |
+| Open WebUI | http://chat.local | `http://open-webui.ui.svc.cluster.local:8080` | `/` |
+| Agent UI (Streamlit) | http://agent.local | `http://agent-ui.ui.svc.cluster.local:8501` | `/`, `/_stcore/health` |
+| Headlamp | http://headlamp.local | `http://headlamp.ui.svc.cluster.local:4466` | `/` |
+| Agent API (LangGraph) | not exposed, see 10.3 | `http://agent.agent.svc.cluster.local:8000` | `POST /chat`, `GET /tools`, `GET /health`, `/docs` (FastAPI) |
+| Filesystem MCP server | not exposed, see 10.3 | `http://mcp-filesystem.agent.svc.cluster.local:8000` | `/mcp` (MCP streamable HTTP), `/health` |
+
+LiteLLM has no API key (README §15), so any client on this PC can call it. For example, from PowerShell:
+
+```powershell
+curl.exe http://llm.local/v1/chat/completions -H "Content-Type: application/json" `
+  -d '{\"model\":\"chat-default\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}'
+```
+
+### 10.3 Internal endpoints (port-forward)
+
+The agent API and the MCP server have no Ingress on purpose: only the agent UI calls them. To try them from Windows, forward a port inside Ubuntu (leave it running, Ctrl+C to stop):
+
+```bash
+kubectl -n agent port-forward svc/agent 8000:8000            # then http://localhost:8000/docs
+kubectl -n agent port-forward svc/mcp-filesystem 8001:8000   # then http://localhost:8001/health
+```
+
+WSL forwards `localhost` ports to Windows, so the browser on Windows reaches them. The agent's `/docs` page lets you call `POST /chat` directly and see the raw `steps`.
+
+### 10.4 Planned (not deployed yet)
+
+Their hosts entries already exist; until the service is deployed the URL returns Traefik's `404`.
+
+| Service | URL | Week |
+|---|---|---|
+| MLflow | http://mlflow.local | 4 |
+| Dagster | http://dagster.local | 4 |
+| MinIO console | http://minio.local | 4 |
+| n8n | http://n8n.local | 6 |
+| Langfuse | http://langfuse.local | 6 |
+| Grafana | http://grafana.local | 6 |
+| ArgoCD | http://argocd.local | 7 |
+
+---|---|
 | Chat (Open WebUI) | http://chat.local |
 | LLM gateway (LiteLLM API docs) | http://llm.local |
 | Agent UI (Streamlit, file agent) | http://agent.local |
