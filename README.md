@@ -175,6 +175,7 @@ local-ai-platform/
 │       ├── deploy.sh
 │       ├── build-images.sh # build our images, load them into k3s (make images)
 │       ├── teardown.sh     # delete all workloads and their volumes
+│       ├── screenshots.ps1 # capture the UIs into docs/screenshots/ (README 10.4)
 │       └── status.sh
 ├── agent/                  # LangGraph agent (6.10)
 │   ├── Dockerfile
@@ -201,6 +202,7 @@ local-ai-platform/
 ├── data/
 ├── tests/                  # pytest, no cluster or LLM needed (make test)
 ├── docs/
+│   └── screenshots/        # UI screenshots (README 10.4)
 └── docker-compose.yml      # optional: run the agent stack without k3s for fast local dev
 ```
 
@@ -592,7 +594,19 @@ kubectl -n agent port-forward svc/mcp-filesystem 8001:8000   # then http://local
 
 WSL forwards `localhost` ports to Windows, so the browser on Windows reaches them. The agent's `/docs` page lets you call `POST /chat` directly and see the raw `steps`.
 
-### 10.4 Planned (not deployed yet)
+### 10.4 Screenshots
+
+Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scripts\screenshots.ps1` with the platform up; re-run it after UI changes). It drives headless Chrome, asks the agent one question, and leaves login pages at their sign-in screen.
+
+| Agent UI (http://agent.local): one `list_dir` call, 27 s on CPU | LiteLLM API docs (http://llm.local) |
+|---|---|
+| ![Agent UI](docs/screenshots/agent.png) | ![LiteLLM](docs/screenshots/litellm.png) |
+| **Qdrant dashboard (http://qdrant.local/dashboard)** | **Open WebUI sign-in (http://chat.local)** |
+| ![Qdrant](docs/screenshots/qdrant.png) | ![Open WebUI](docs/screenshots/chat.png) |
+| **Headlamp token login (http://headlamp.local)** | |
+| ![Headlamp](docs/screenshots/headlamp.png) | |
+
+### 10.5 Planned (not deployed yet)
 
 Their hosts entries already exist; until the service is deployed the URL returns Traefik's `404`.
 
