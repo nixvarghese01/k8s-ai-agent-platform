@@ -2,7 +2,7 @@
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 
-.PHONY: up local-up up-docker down local-down restart status deploy images test llm-reload headlamp-token teardown
+.PHONY: up local-up up-docker down local-down restart status deploy images test llm-reload rag-index headlamp-token teardown
 
 up:        ## start Ollama + k3s and wait until every pod is Ready
 	bash infra/scripts/platform.sh up
@@ -37,6 +37,9 @@ llm-reload: ## apply llm/litellm.yaml and restart LiteLLM to load its model list
 	kubectl apply -f infra/k3s/llm/litellm.yaml
 	kubectl -n llm rollout restart deploy/litellm
 	kubectl -n llm rollout status deploy/litellm --timeout=5m
+
+rag-index: ## index the shared folder into Qdrant now (ARGS=--rebuild to start over)
+	bash infra/scripts/rag-index.sh $(ARGS)
 
 headlamp-token: ## print the Headlamp login token (cluster-admin; README §6.11)
 	@kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d; echo

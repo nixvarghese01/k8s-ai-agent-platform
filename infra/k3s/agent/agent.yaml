@@ -112,7 +112,8 @@ spec:
             # Add an MCP server here and restart the agent; no code change needed
             - name: MCP_SERVERS
               value: |
-                {"filesystem": {"url": "http://mcp-filesystem.agent.svc.cluster.local:8000/mcp"}}
+                {"filesystem": {"url": "http://mcp-filesystem.agent.svc.cluster.local:8000/mcp"},
+                 "rag": {"url": "http://mcp-rag.agent.svc.cluster.local:8000/mcp"}}
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true

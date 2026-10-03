@@ -9,6 +9,7 @@
 import asyncio
 import logging
 import os
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -17,7 +18,7 @@ from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
-from graph import LLM_MODEL, MCP_SERVERS, build_graph, load_tools
+from graph import LLM_MODEL, MCP_SERVERS, RETRIEVE_TOOL, build_graph, load_tools, text
 
 log = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -71,11 +72,13 @@ class ChatResponse(BaseModel):
     seconds: float
 
 
-def text(content) -> str:
-    """Message content is a string or a list of content blocks; MCP tool results are the latter."""
-    if isinstance(content, str):
-        return content
-    return "\n".join(b.get("text", "") if isinstance(b, dict) else str(b) for b in content)
+def sources(context: str, answer: str) -> str:
+    """A "Sources:" line for the retrieved passages, unless the answer already cites them.
+    A 3B model often drops the citations it is asked for, so they're added here instead."""
+    refs = re.findall(r"^\[\d+\] (\S+:\d+-\d+) \(score", context, re.M)
+    if not refs or any(r in answer for r in refs):
+        return ""
+    return "\n\nSources: " + ", ".join(dict.fromkeys(refs))
 
 
 @app.get("/health")
@@ -114,13 +117,16 @@ async def chat(req: ChatRequest):
     turn = messages[last_human + 1 :]
 
     results = {m.tool_call_id: text(m.content) for m in turn if isinstance(m, ToolMessage)}
-    steps = [
+    # The automatic retrieval comes first, so the UI shows what the model was given
+    steps = [Step(tool=f"{RETRIEVE_TOOL} (auto)", args={"query": req.message}, result=result["context"])] if result.get("context") else []
+    steps += [
         Step(tool=c["name"], args=c["args"], result=results.get(c["id"], ""))
         for m in turn
         if isinstance(m, AIMessage)
         for c in m.tool_calls
     ]
     answer = text(turn[-1].content) if turn else ""
+    answer += sources(result.get("context", ""), answer)
     seconds = round(time.time() - start, 1)
     log.info("thread %s: %d tool calls, %.1fs", thread_id, len(steps), seconds)
     return ChatResponse(thread_id=thread_id, answer=answer, steps=steps, seconds=seconds)

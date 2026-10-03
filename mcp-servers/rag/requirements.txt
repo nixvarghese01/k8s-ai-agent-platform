@@ -1,0 +1,5 @@
+llama-index-core==0.14.25
+llama-index-vector-stores-qdrant==0.10.3
+qdrant-client==1.19.1
+mcp==1.30.0
+httpx==0.28.1

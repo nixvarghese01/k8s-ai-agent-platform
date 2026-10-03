@@ -149,6 +149,7 @@ local-ai-platform/
 │   │   ├── mlops/dagster.yaml
 │   │   ├── mlops/bentoml.yaml
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
+│   │   ├── agent/rag.yaml        # RAG: mcp-rag search server + rag-index CronJob (6.12)
 │   │   ├── ui/open-webui.yaml
 │   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.local)
 │   │   ├── ui/headlamp.yaml      # Kubernetes dashboard (headlamp.local)
@@ -176,15 +177,17 @@ local-ai-platform/
 │       ├── build-images.sh # build our images, load them into k3s (make images)
 │       ├── teardown.sh     # delete all workloads and their volumes
 │       ├── screenshots.ps1 # capture the UIs into docs/screenshots/ (README 10.4)
+│       ├── rag-index.sh    # run the RAG indexer now (make rag-index)
 │       └── status.sh
 ├── agent/                  # LangGraph agent (6.10)
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py             # FastAPI: POST /chat, GET /tools
-│   ├── graph.py            # model -> tools loop; tools come from MCP servers
+│   ├── graph.py            # retrieve -> answer, else model -> tools loop (6.12)
 │   └── prompts/system.md
 ├── mcp-servers/
 │   ├── filesystem/         # read-only list/search/read over one folder (6.10)
+│   ├── rag/                # LlamaIndex indexer + search_documents over Qdrant (6.12)
 │   ├── web-search/
 │   ├── fetch/
 │   ├── memory/
@@ -193,7 +196,6 @@ local-ai-platform/
 ├── pipelines/
 │   ├── train.py
 │   ├── tune.py
-│   ├── rag_index.py
 │   └── dagster_job.py
 ├── serving/
 │   └── service.py
@@ -468,6 +470,33 @@ The token belongs to the `ui/headlamp` ServiceAccount, which is **cluster-admin*
 
 New hostname: re-run [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin) to add `headlamp.local`.
 
+### 6.12 Document Q&A (RAG: LlamaIndex + Qdrant)
+
+Ask http://agent.local about what your documents *say* ("What was decided in the last meeting?"). The answer comes from the passages that match, with a **Sources:** line of `file:lines`; expand the 🔧 `search_documents (auto)` line to see them.
+
+```text
+E:\ai-files ─► rag-index (CronJob, every 15 min) ─ LlamaIndex: split ─► embed-default (LiteLLM) ─► Qdrant "docs"
+                                                                           only new/changed files (sha256)
+
+question ─► agent: retrieve ─► mcp-rag search_documents ─► passages above the score cut-off?
+                    ├─ yes ─► answer from them (no tools, 1 model call) ─► answer + Sources
+                    │           └─ model says NO_ANSWER ─┐
+                    └─ no (or "which files...") ─────────┴─► tool loop (list_dir / read_file / search_files)
+```
+
+| Piece | Code | Manifest |
+|---|---|---|
+| Indexer: text files → 256-token chunks with their line range → `embed-default` → Qdrant | [`rag_index.py`](mcp-servers/rag/rag_index.py) | CronJob `rag-index` in [`agent/rag.yaml`](infra/k3s/agent/rag.yaml) |
+| Search server: MCP tool `search_documents` | [`rag_server.py`](mcp-servers/rag/rag_server.py) | Deployment `mcp-rag` in [`agent/rag.yaml`](infra/k3s/agent/rag.yaml) |
+| Embeddings through LiteLLM, with nomic's `search_query:` / `search_document:` prefixes | [`rag_store.py`](mcp-servers/rag/rag_store.py) | ConfigMap `rag-config` |
+| Agent: retrieve first, answer from passages, fall back to the tool loop | [`agent/graph.py`](agent/graph.py) | `MCP_SERVERS` in [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
+
+**Indexing** runs every 15 minutes while the platform is up, and only re-embeds files whose content changed, so a run with nothing new takes seconds. Put a file in `E:\ai-files` and run `make rag-index` (inside Ubuntu) to index it now. After changing the embedding model, its prefixes or the chunk size, run `make rag-index ARGS=--rebuild`. Indexed: text files up to 1 MB (`.md`, `.txt`, `.csv`, `.json`, `.yaml`, code, ...); PDFs and Office files come with OCR in Week 8.
+
+**Why the agent retrieves before asking the model:** with `qwen2.5:3b` on CPU (measured 2026-10-03), handing the model a search tool went wrong in three ways. It often answered "I don't have access" instead of searching. When it did search, it searched again or called other tools after getting the passages, which cost 12–42 s. And with tools bound it sometimes returned an empty reply. Retrieving first and answering without tools takes **3–11 s (median ~7 s)** and was right on every test question. Passages count only if they score at least `MIN_SCORE` 0.60 and are within `SCORE_MARGIN` 0.05 of the best one: right passages scored 0.66–0.77, off-topic questions at most 0.53. Questions asking *which files* exist skip retrieval; otherwise the model described the README instead of listing the folder.
+
+**Tuning** (in `rag-config`, then `kubectl -n agent rollout restart deploy/mcp-rag`): `TOP_K` passages (4), `MIN_SCORE`, `SCORE_MARGIN`; `CHUNK_TOKENS` / `CHUNK_OVERLAP` need a `--rebuild`. The collection is visible at http://qdrant.local/dashboard → Collections → `docs`.
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -531,7 +560,7 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 |---|---|---|---|
 | 1 | Chat + memory | 2–3 s | Ollama, memory MCP, Open WebUI |
 | 2 | File search | 2–4 s | filesystem MCP |
-| 3 | RAG Q&A | 3–5 s | LlamaIndex, Qdrant, nomic-embed-text |
+| 3 | RAG Q&A | 3–5 s (measured 3–11 s, median ~7 s) | LlamaIndex, Qdrant, nomic-embed-text, mcp-rag |
 | 4 | Email triage | 30–60 s | n8n, LLM classification |
 | 5 | Calendar | 2–4 s | time MCP, n8n |
 | 6 | Web research | 15–30 s | web-search + fetch MCP |
@@ -575,6 +604,7 @@ A `404` from any `*.local` URL comes from Traefik itself: the hostname resolves 
 | Headlamp | http://headlamp.local | `http://headlamp.ui.svc.cluster.local:4466` | `/` |
 | Agent API (LangGraph) | not exposed, see 10.3 | `http://agent.agent.svc.cluster.local:8000` | `POST /chat`, `GET /tools`, `GET /health`, `/docs` (FastAPI) |
 | Filesystem MCP server | not exposed, see 10.3 | `http://mcp-filesystem.agent.svc.cluster.local:8000` | `/mcp` (MCP streamable HTTP), `/health` |
+| RAG MCP server | not exposed, see 10.3 | `http://mcp-rag.agent.svc.cluster.local:8000` | `/mcp` (tool `search_documents`), `/health` |
 
 LiteLLM has no API key (README §15), so any client on this PC can call it. For example, from PowerShell:
 
@@ -590,18 +620,19 @@ The agent API and the MCP server have no Ingress on purpose: only the agent UI c
 ```bash
 kubectl -n agent port-forward svc/agent 8000:8000            # then http://localhost:8000/docs
 kubectl -n agent port-forward svc/mcp-filesystem 8001:8000   # then http://localhost:8001/health
+kubectl -n agent port-forward svc/mcp-rag 8002:8000          # then http://localhost:8002/health
 ```
 
 WSL forwards `localhost` ports to Windows, so the browser on Windows reaches them. The agent's `/docs` page lets you call `POST /chat` directly and see the raw `steps`.
 
 ### 10.4 Screenshots
 
-Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scripts\screenshots.ps1` with the platform up; re-run it after UI changes). It drives headless Chrome, asks the agent one question, and leaves login pages at their sign-in screen.
+Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scripts\screenshots.ps1` with the platform up; re-run it after UI changes). It drives headless Chrome, asks the agent one document question, and leaves login pages at their sign-in screen.
 
-| Agent UI (http://agent.local): one `list_dir` call, 27 s on CPU | LiteLLM API docs (http://llm.local) |
+| Agent UI (http://agent.local): document question, retrieved passage and sources, 6.6 s on CPU | LiteLLM API docs (http://llm.local) |
 |---|---|
 | ![Agent UI](docs/screenshots/agent.png) | ![LiteLLM](docs/screenshots/litellm.png) |
-| **Qdrant dashboard (http://qdrant.local/dashboard)** | **Open WebUI sign-in (http://chat.local)** |
+| **Qdrant dashboard: collection `docs`, 65 chunks, 768-dim cosine** | **Open WebUI sign-in (http://chat.local)** |
 | ![Qdrant](docs/screenshots/qdrant.png) | ![Open WebUI](docs/screenshots/chat.png) |
 | **Headlamp token login (http://headlamp.local)** | |
 | ![Headlamp](docs/screenshots/headlamp.png) | |
@@ -673,7 +704,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 |---|---|---|
 | 1 | k3s + Ollama + Qdrant | Chat works ✅ |
 | 2 | LangGraph + filesystem MCP | File agent ✅ |
-| 3 | RAG (LlamaIndex + Qdrant) | Doc Q&A |
+| 3 | RAG (LlamaIndex + Qdrant) | Doc Q&A ✅ |
 | 4 | MLflow + Dagster + training | Model trained |
 | 5 | BentoML + agent integration | Model exposed as agent tool |
 | 6 | n8n + Langfuse + Grafana | Automation + traces |
@@ -715,8 +746,10 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | GHCR 500 MB limit | Applies to private packages; keep images small (slim bases, multi-stage builds) and run `cleanup.yml`. Public images are free. |
 | Voice/OCR tooling | Not yet specified — candidates: faster-whisper (STT), Piper (TTS), Tesseract / PaddleOCR (OCR). |
 | Email/Calendar access | Requires OAuth credentials for the chosen provider; store as Kubernetes Secrets. |
-| 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent check, or the questions in 6.10). |
-| Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. |
+| 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
+| Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
+| RAG image size | `local-ai/mcp-rag` is ~600 MB (LlamaIndex pulls NumPy, NLTK, SQLAlchemy, Pillow), against ~80 MB for the other images. Public GHCR images have no size limit; keep it public, or slim it before Week 7 if it must be private. |
+| RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
 | Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.3 GB. Watch it as services are added. |

@@ -2,8 +2,8 @@
 # Run from Windows with the platform up:  .\infra\scripts\screenshots.ps1 [-Only agent,qdrant]
 #
 # Drives headless Chrome (or Edge) over the DevTools protocol, so it waits until each page has
-# really rendered (Streamlit fills its page over a websocket after load). The agent page asks
-# one question and opens the first tool call, which takes 10–60 s on CPU. Pages behind a login
+# really rendered (Streamlit fills its page over a websocket after load). The agent page asks a
+# document question and opens the retrieved passages (5–20 s on CPU). Pages behind a login
 # (Open WebUI, Headlamp) are captured at their login screen; no credentials are used.
 param([string[]]$Only)
 $ErrorActionPreference = 'Stop'
@@ -15,7 +15,7 @@ $browser = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
     "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $browser) { throw 'Chrome or Edge not found' }
 
-$question = 'What files are in my shared folder?'
+$question = 'What was decided in the meeting on 2026-10-01?'
 # name = url, JavaScript that is true once the page has rendered, seconds to wait for it
 $pages = [ordered]@{
     litellm  = @('http://llm.local/', "!!document.querySelector('.swagger-ui .info')", 30)

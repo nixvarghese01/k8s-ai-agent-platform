@@ -25,7 +25,7 @@ with st.sidebar:
     if st.button("New conversation"):
         st.session_state.clear()
         st.rerun()
-    st.caption("Runs on a CPU: answers that use tools take 20–90 s.")
+    st.caption("Runs on a CPU: questions about your documents take 3–11 s, ones that need the file tools 10–30 s.")
 
 
 def show(msg):

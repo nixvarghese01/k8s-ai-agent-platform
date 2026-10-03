@@ -1,2 +1,3 @@
 -r ../agent/requirements.txt
+-r ../mcp-servers/rag/requirements.txt
 pytest==9.1.1

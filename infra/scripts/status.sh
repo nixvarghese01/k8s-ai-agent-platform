@@ -57,6 +57,15 @@ print('tools', [t['name'] for t in httpx.get(A + '/tools', timeout=60).json()['t
 d = httpx.post(A + '/chat', json={'message': 'List the files in my shared folder.'}, timeout=900).json()
 print('calls', [s['tool'] for s in d['steps']], '%.1fs' % d['seconds'])"
 
+echo "== rag (collection docs, last index run, one document question)"
+Q=http://$(kubectl -n storage get svc qdrant -o jsonpath='{.spec.clusterIP}'):6333
+curl -s "$Q/collections/docs" | grep -o '"points_count":[0-9]*'
+kubectl -n agent get cronjob rag-index --no-headers -o custom-columns='LAST-RUN:.status.lastScheduleTime,LAST-OK:.status.lastSuccessfulTime'
+kubectl -n ui exec deploy/agent-ui -- python -c "
+import httpx
+d = httpx.post('http://agent.agent.svc.cluster.local:8000/chat', json={'message': 'What is on my todo list?'}, timeout=900).json()
+print('steps', [s['tool'] for s in d['steps']], '%.1fs' % d['seconds'], '| sources:', d['answer'].rpartition('Sources: ')[2][:80] or 'none')"
+
 echo "== qdrant write/read"
 Q=http://$(kubectl -n storage get svc qdrant -o jsonpath='{.spec.clusterIP}'):6333
 curl -s -X PUT "$Q/collections/verify_test" -H 'Content-Type: application/json' -d '{"vectors":{"size":4,"distance":"Cosine"}}'; echo
