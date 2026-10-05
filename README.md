@@ -57,7 +57,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | Protocol | MCP | Standard tool interface between agent and tools |
 | Vector DB | Qdrant | Embedding storage and similarity search |
 | Database | Postgres / SQLite | App state, metadata, backends for MLflow/n8n/Langfuse |
-| Object Storage | MinIO | S3-compatible artifact and document storage |
+| Object Storage | SeaweedFS | S3-compatible artifact and document storage (MinIO went source-only in late 2025, [6.13](#613-training-pipeline-mlflow--dagster--optuna)) |
 | ML Tracking | MLflow | Experiments, metrics, model registry |
 | Pipelines | Dagster | Training, tuning, and RAG indexing pipelines |
 | Serving | BentoML | Serve trained models as APIs (exposed to agent as a tool) |
@@ -95,7 +95,7 @@ Windows 11 (32 GB) ── browser ──► http://*.local (hosts file → ::1 �
                └── k3s
                      ├── kube-system:   Traefik on host ports 80/443, CoreDNS, local-path storage
                      ├── llm:           LiteLLM gateway (:4000) + Service "ollama" → Ollama on the host
-                     ├── storage:       Qdrant, MinIO, Postgres
+                     ├── storage:       Qdrant, SeaweedFS (S3), Postgres
                      ├── mlops:         MLflow, Dagster, BentoML
                      ├── agent:         LangGraph + MCP servers
                      ├── ui:            Open WebUI + Streamlit
@@ -143,10 +143,10 @@ local-ai-platform/
 │   │   ├── llm/ollama-host.yaml  # in-cluster Service for the host's Ollama
 │   │   ├── llm/litellm.yaml      # LLM gateway: model aliases (edit to switch/add models)
 │   │   ├── storage/qdrant.yaml
-│   │   ├── storage/minio.yaml
-│   │   ├── storage/postgres.yaml
-│   │   ├── mlops/mlflow.yaml
-│   │   ├── mlops/dagster.yaml
+│   │   ├── storage/seaweedfs.yaml # S3 object storage (buckets mlflow, dagster)
+│   │   ├── storage/postgres.yaml  # metadata DBs for MLflow and Dagster
+│   │   ├── mlops/mlflow.yaml      # tracking server + model registry (6.13)
+│   │   ├── mlops/dagster.yaml     # webserver + daemon (schedules, runs)
 │   │   ├── mlops/bentoml.yaml
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── agent/rag.yaml        # RAG: mcp-rag search server + rag-index CronJob (6.12)
@@ -193,10 +193,11 @@ local-ai-platform/
 │   ├── memory/
 │   ├── sqlite/
 │   └── time/
-├── pipelines/
-│   ├── train.py
-│   ├── tune.py
-│   └── dagster_job.py
+├── mlops/mlflow/           # MLflow server image (adds the Postgres driver and boto3)
+├── pipelines/              # Dagster image + code (6.13)
+│   ├── dagster.yaml        # instance: Postgres storage, run queue, logs in S3
+│   ├── workspace.yaml
+│   └── triage/             # data.py (download, split), train.py (Optuna + MLflow), definitions.py
 ├── serving/
 │   └── service.py
 ├── n8n/workflows/
@@ -376,7 +377,7 @@ Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin Power
 ::1 n8n.local
 ::1 langfuse.local
 ::1 grafana.local
-::1 minio.local
+::1 s3.local
 ::1 qdrant.local
 ::1 argocd.local
 ::1 headlamp.local
@@ -497,6 +498,56 @@ question ─► agent: retrieve ─► mcp-rag search_documents ─► passages 
 
 **Tuning** (in `rag-config`, then `kubectl -n agent rollout restart deploy/mcp-rag`): `TOP_K` passages (4), `MIN_SCORE`, `SCORE_MARGIN`; `CHUNK_TOKENS` / `CHUNK_OVERLAP` need a `--rebuild`. The collection is visible at http://qdrant.local/dashboard → Collections → `docs`.
 
+### 6.13 Training pipeline (MLflow + Dagster + Optuna)
+
+A classical-ML pipeline next to the LLM side: a **message-triage** classifier (spam vs. normal message) trained on the public [SMS Spam Collection](https://archive.ics.uci.edu/dataset/228/sms+spam+collection) (5,574 messages, 13% spam). In Week 5 it becomes an agent tool (`classify_message`) and the basis of workflow 4 (email triage).
+
+```text
+Dagster (dagster.local)  daemon: nightly 02:00 Asia/Dubai, or `make train` / "Materialize all"
+  sms_spam_raw ─► sms_spam_split ─► triage_model ──────────────► check: test F1 >= 0.90
+  (UCI, sha256)   (80/20, seed 42)   Optuna: 30 trials × 5-fold CV
+       │                │            final fit + test metrics
+       └── SeaweedFS s3://dagster ───┘        │
+                                              ▼
+                              MLflow (mlflow.local): runs + 30 child runs, model "message-triage"
+                              Postgres (runs, registry)   SeaweedFS s3://mlflow (model files)
+                              alias "champion" moves only when test F1 improves
+```
+
+| Piece | Code | Manifest |
+|---|---|---|
+| Postgres 18: databases `mlflow`, `dagster` | — | [`storage/postgres.yaml`](infra/k3s/storage/postgres.yaml) |
+| SeaweedFS (`weed mini`): S3 API + admin UI at http://s3.local | — | [`storage/seaweedfs.yaml`](infra/k3s/storage/seaweedfs.yaml) |
+| MLflow server: tracking, registry, artifact proxy to `s3://mlflow` | [`mlops/mlflow/`](mlops/mlflow/Dockerfile) | [`mlops/mlflow.yaml`](infra/k3s/mlops/mlflow.yaml) |
+| Dagster webserver + daemon | [`pipelines/`](pipelines/dagster.yaml) | [`mlops/dagster.yaml`](infra/k3s/mlops/dagster.yaml) |
+| Assets, job, nightly schedule, F1 check | [`triage/definitions.py`](pipelines/triage/definitions.py) | |
+| Dataset download (pinned sha256) and split | [`triage/data.py`](pipelines/triage/data.py) | |
+| Optuna tuning, MLflow logging, registry promotion | [`triage/train.py`](pipelines/triage/train.py) | |
+
+**Running it:** the schedule runs `triage_training` at 02:00 local time, when the laptop is coolest (§12). If the platform is down then, that night is skipped (Dagster doesn't replay missed nights). To train now: `make train` inside Ubuntu, or http://dagster.local → *Jobs* → `triage_training` → *Materialize all*. Runs queue and execute one at a time in the daemon pod (max 2 CPUs).
+
+**First run (2026-10-05):** 13.5 min on CPU (30 trials, ~25 s each, ~1.9 cores, 1.3 GiB). Best model: character 2–5-grams, `C` 49, balanced class weights.
+
+| Test set (1,115 messages) | F1 (spam) | Precision | Recall | Accuracy | ROC AUC |
+|---|---|---|---|---|---|
+| `message-triage` v1 (champion) | **0.976** | **1.000** | 0.953 | 99.4% | 0.998 |
+
+Precision 1.0 means no normal message was flagged as spam; recall 0.953 means 1 in 21 spam messages got through.
+
+**Using the model:** `models:/message-triage@champion` is always the best version so far. Any pod with `MLFLOW_TRACKING_URI=http://mlflow.mlops.svc.cluster.local:5000` can load it; files come through MLflow's artifact proxy, so no S3 keys are needed:
+
+```python
+import mlflow, pandas as pd
+model = mlflow.pyfunc.load_model("models:/message-triage@champion")
+model.predict(pd.DataFrame({"text": ["You have won a voucher, call now", "Dinner at 6?"]}))  # ['spam', 'ham']
+```
+
+**Credentials:** generated once by `deploy.sh` and kept only in the cluster (Secrets `storage/postgres-secret`, `storage/seaweedfs-secret`, copies in `mlops`). `make s3-credentials` prints the SeaweedFS admin login (user `admin`) and the S3 key pair.
+
+**Why SeaweedFS, not MinIO:** MinIO switched to a source-only distribution in late 2025, so there are no maintained images. SeaweedFS is Apache-2.0, actively maintained, and the replacement Kubeflow Pipelines chose. Its `mini` mode runs master, volume, filer, S3 API and admin UI in one ~180 MB process. Anything that speaks S3 (boto3, MLflow, Dagster) uses it unchanged; moving to AWS S3 or Azure Blob later means changing the endpoint URL.
+
+**Three things that bit during setup (fixed in the manifests):** MLflow 3 starts a GenAI job runner of ~8 Python processes (~240 MB each) by default and was OOM-killed at 1 GiB, so it's off (`MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`; 400 MB now). SQLAlchemy now picks psycopg 3 for `postgresql://`, so the MLflow image ships psycopg 3. Dagster's Postgres storage breaks under psycopg 3 (its `NOTIFY` query), so Dagster gets an explicit `postgresql+psycopg2://` URL.
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -532,10 +583,10 @@ Deploys to laptop k3s
 | Ollama (3B model, on the WSL host) | 4 GB |
 | LiteLLM gateway | 256 MB (limit 1 GB) |
 | Qdrant | 512 MB |
-| Postgres | 512 MB |
-| MinIO | 512 MB |
-| MLflow | 512 MB |
-| Dagster | 1 GB |
+| Postgres | 512 MB (measured 72 MB idle) |
+| SeaweedFS (replaces MinIO) | 512 MB (measured 184 MB) |
+| MLflow | 512 MB (measured 400 MB, job runner off) |
+| Dagster | 1 GB (measured: webserver 590 MB, daemon 390 MB idle / 1.3 GB while training) |
 | BentoML | 512 MB |
 | LangGraph + MCP servers | 1.5 GB |
 | Open WebUI + Agent UI | 768 MB |
@@ -566,7 +617,7 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 | 6 | Web research | 15–30 s | web-search + fetch MCP |
 | 7 | Multi-step agent | 15–30 s | LangGraph planning + multiple tools |
 | 8 | Voice assistant | 3–6 s | Speech-to-text + TTS + agent |
-| 9 | OCR pipeline | 4–8 s | OCR engine + MinIO + RAG index |
+| 9 | OCR pipeline | 4–8 s | OCR engine + SeaweedFS + RAG index |
 | 10 | Daily briefing | 30–60 s | n8n schedule + web + calendar + LLM summary |
 
 Latencies are targets for CPU-only 3B models and should be measured and reported via Langfuse.
@@ -585,10 +636,13 @@ Work down the list; each step depends only on the ones above it. If a step fails
 |---|---|---|---|
 | 1 | http://localhost:11434 | `Ollama is running` | `curl.exe http://localhost:11434/api/tags` lists `llama3.2:3b`, `qwen2.5:3b`, `nomic-embed-text` |
 | 2 | http://llm.local | LiteLLM's API docs (Swagger) | `curl.exe http://llm.local/v1/models` lists `chat-default`, `chat-tools`, `embed-default` |
-| 3 | http://qdrant.local/dashboard | Qdrant's web UI with the collections list (empty until Week 3) | `curl.exe http://qdrant.local/readyz` → `all shards are ready` |
+| 3 | http://qdrant.local/dashboard | Qdrant's web UI with the collections list (`docs` from the RAG index, 6.12) | `curl.exe http://qdrant.local/readyz` → `all shards are ready` |
 | 4 | http://chat.local | Open WebUI login; sign in with your existing account (signup is off). Pick `chat-default` and send "hi" | `curl.exe -o NUL -w "%{http_code}" http://chat.local` → `200` |
 | 5 | http://agent.local | Agent UI. Ask "What files are in my shared folder?" and expand the 🔧 lines (10–25 s on CPU) | `curl.exe -o NUL -w "%{http_code}" http://agent.local` → `200` |
 | 6 | http://headlamp.local | Headlamp asks for a token: run `.\infra\scripts\platform.ps1 headlamp-token` and paste it. Then **Workloads → Pods** shows every pod ([6.11](#611-cluster-dashboard-headlamp)) | `curl.exe -o NUL -w "%{http_code}" http://headlamp.local` → `200` |
+| 7 | http://mlflow.local | MLflow: *Experiments* → `message-triage` (runs with their trials), *Models* → `message-triage` with alias `champion` ([6.13](#613-training-pipeline-mlflow--dagster--optuna)) | `curl.exe http://mlflow.local/health` → `OK` |
+| 8 | http://dagster.local | Dagster: *Catalog* → `triage_model` (last run's metrics), *Automation* → `triage_nightly` schedule | `curl.exe -o NUL -w "%{http_code}" http://dagster.local/server_info` → `200` |
+| 9 | http://s3.local | SeaweedFS admin sign-in; user `admin`, password from `make s3-credentials`. *Object Store* → buckets `mlflow`, `dagster` | `curl.exe -o NUL -w "%{http_code}" http://s3.local` → `307` (to the sign-in page) |
 
 A `404` from any `*.local` URL comes from Traefik itself: the hostname resolves but no Ingress matches it (a typo, or that service isn't deployed). A browser "can't reach this site" means the hosts entry is missing.
 
@@ -605,6 +659,10 @@ A `404` from any `*.local` URL comes from Traefik itself: the hostname resolves 
 | Agent API (LangGraph) | not exposed, see 10.3 | `http://agent.agent.svc.cluster.local:8000` | `POST /chat`, `GET /tools`, `GET /health`, `/docs` (FastAPI) |
 | Filesystem MCP server | not exposed, see 10.3 | `http://mcp-filesystem.agent.svc.cluster.local:8000` | `/mcp` (MCP streamable HTTP), `/health` |
 | RAG MCP server | not exposed, see 10.3 | `http://mcp-rag.agent.svc.cluster.local:8000` | `/mcp` (tool `search_documents`), `/health` |
+| MLflow | http://mlflow.local | `http://mlflow.mlops.svc.cluster.local:5000` | `/` UI, `/health`, `/api/2.0/mlflow/...` (REST), `/api/2.0/mlflow-artifacts/...` (artifact proxy) |
+| Dagster | http://dagster.local | `http://dagster-webserver.mlops.svc.cluster.local:3000` | `/` UI, `/server_info`, `/graphql` |
+| SeaweedFS | http://s3.local (admin UI) | `http://seaweedfs.storage.svc.cluster.local:8333` (S3 API), `:23646` (admin UI) | S3: buckets `mlflow`, `dagster`; keys from `make s3-credentials` |
+| Postgres | not exposed, see 10.3 | `postgres.storage.svc.cluster.local:5432` | databases `mlflow`, `dagster` |
 
 LiteLLM has no API key (README §15), so any client on this PC can call it. For example, from PowerShell:
 
@@ -621,6 +679,8 @@ The agent API and the MCP server have no Ingress on purpose: only the agent UI c
 kubectl -n agent port-forward svc/agent 8000:8000            # then http://localhost:8000/docs
 kubectl -n agent port-forward svc/mcp-filesystem 8001:8000   # then http://localhost:8001/health
 kubectl -n agent port-forward svc/mcp-rag 8002:8000          # then http://localhost:8002/health
+kubectl -n storage port-forward svc/seaweedfs 8333:8333      # S3 API at http://localhost:8333 (aws cli, boto3)
+kubectl -n storage port-forward svc/postgres 5432:5432       # psql/DBeaver on localhost:5432
 ```
 
 WSL forwards `localhost` ports to Windows, so the browser on Windows reaches them. The agent's `/docs` page lets you call `POST /chat` directly and see the raw `steps`.
@@ -634,8 +694,10 @@ Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scrip
 | ![Agent UI](docs/screenshots/agent.png) | ![LiteLLM](docs/screenshots/litellm.png) |
 | **Qdrant dashboard: collection `docs`, 65 chunks, 768-dim cosine** | **Open WebUI sign-in (http://chat.local)** |
 | ![Qdrant](docs/screenshots/qdrant.png) | ![Open WebUI](docs/screenshots/chat.png) |
-| **Headlamp token login (http://headlamp.local)** | |
-| ![Headlamp](docs/screenshots/headlamp.png) | |
+| **Headlamp token login (http://headlamp.local)** | **MLflow registry: `message-triage` v1, alias `champion`, test F1 0.9759** |
+| ![Headlamp](docs/screenshots/headlamp.png) | ![MLflow](docs/screenshots/mlflow.png) |
+| **Dagster: `triage_model` materialized, check passed, nightly 02:00 GMT+4** | **SeaweedFS admin sign-in (http://s3.local)** |
+| ![Dagster](docs/screenshots/dagster.png) | ![SeaweedFS](docs/screenshots/s3.png) |
 
 ### 10.5 Planned (not deployed yet)
 
@@ -643,27 +705,10 @@ Their hosts entries already exist; until the service is deployed the URL returns
 
 | Service | URL | Week |
 |---|---|---|
-| MLflow | http://mlflow.local | 4 |
-| Dagster | http://dagster.local | 4 |
-| MinIO console | http://minio.local | 4 |
 | n8n | http://n8n.local | 6 |
 | Langfuse | http://langfuse.local | 6 |
 | Grafana | http://grafana.local | 6 |
 | ArgoCD | http://argocd.local | 7 |
-
----|---|
-| Chat (Open WebUI) | http://chat.local |
-| LLM gateway (LiteLLM API docs) | http://llm.local |
-| Agent UI (Streamlit, file agent) | http://agent.local |
-| Cluster dashboard (Headlamp) | http://headlamp.local |
-| MLflow | http://mlflow.local |
-| Dagster | http://dagster.local |
-| n8n | http://n8n.local |
-| Langfuse | http://langfuse.local |
-| Grafana | http://grafana.local |
-| MinIO | http://minio.local |
-| Qdrant | http://qdrant.local/dashboard |
-| ArgoCD | http://argocd.local |
 
 ---
 
@@ -691,7 +736,7 @@ Their hosts entries already exist; until the service is deployed the URL returns
 | Start the platform only when needed | No idle heat | `platform.ps1 up` / `down` ([6.6](#66-start-and-stop-the-platform)) |
 | Cooling stand (e.g. TopMate C302) | 10–18 °C cooler | Physical |
 | Elevate back of laptop | 5–8 °C cooler | Physical |
-| Schedule training at night | Heat when ambient is cool | Dagster schedules (Week 4) |
+| Schedule training at night | Heat when ambient is cool | Dagster schedule `triage_nightly`, 02:00 local; one run at a time, max 2 CPUs ([6.13](#613-training-pipeline-mlflow--dagster--optuna)) |
 | Monitor with HWiNFO / Core Temp | Know actual temps | Windows-side tool; `sensors` does not work inside WSL, and Windows needs admin rights to read temperatures |
 
 On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from ~10.9 s to ~13.8 s, including model load.
@@ -705,7 +750,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 1 | k3s + Ollama + Qdrant | Chat works ✅ |
 | 2 | LangGraph + filesystem MCP | File agent ✅ |
 | 3 | RAG (LlamaIndex + Qdrant) | Doc Q&A ✅ |
-| 4 | MLflow + Dagster + training | Model trained |
+| 4 | MLflow + Dagster + training | Model trained ✅ |
 | 5 | BentoML + agent integration | Model exposed as agent tool |
 | 6 | n8n + Langfuse + Grafana | Automation + traces |
 | 7 | ArgoCD + GitHub Actions | GitOps CI/CD |
@@ -741,13 +786,16 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Item | Notes |
 |---|---|
 | Ollama placement | **Decided:** WSL host (systemd), reached by pods at `http://ollama.llm.svc.cluster.local:11434`. Trade-off: ArgoCD doesn't manage Ollama; its settings live in [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh). The `10.42.0.1` address in `llm/ollama-host.yaml` assumes k3s's default pod network on a single node. |
-| Langfuse footprint | Langfuse v3 needs Postgres + ClickHouse + Redis + MinIO; 512 MB is optimistic. Budget ~1.5–2 GB or use Langfuse v2 (Postgres only). |
+| Langfuse footprint | Langfuse v3 needs Postgres + ClickHouse + Redis + S3 (SeaweedFS can serve); 512 MB is optimistic. Budget ~1.5–2 GB or use Langfuse v2 (Postgres only). |
 | ArgoCD memory | 1.3 GB is significant; consider disabling Dex/notifications or using ArgoCD core mode. |
 | GHCR 500 MB limit | Applies to private packages; keep images small (slim bases, multi-stage builds) and run `cleanup.yml`. Public images are free. |
 | Voice/OCR tooling | Not yet specified — candidates: faster-whisper (STT), Piper (TTS), Tesseract / PaddleOCR (OCR). |
 | Email/Calendar access | Requires OAuth credentials for the chosen provider; store as Kubernetes Secrets. |
 | 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
+| Image sizes | `local-ai/mlflow` 1.3 GB and `local-ai/pipelines` 1.1 GB (MLflow, Dagster, scikit-learn, pandas), on top of `mcp-rag`. Fine locally; for GHCR in Week 7 keep them public or slim them (e.g. `mlflow-skinny` for the server isn't enough: it lacks the server). |
+| Nightly training | Runs only if the platform is up at 02:00; missed nights aren't replayed. Same data + fixed seed give the same score, so the champion only changes when the data or the search space does. |
+| MLflow / Dagster auth | Neither UI has a login; they're reachable only from this PC (WSL NAT). Add auth (MLflow `basic-auth` app, a proxy for Dagster) before exposing them. |
 | RAG image size | `local-ai/mcp-rag` is ~600 MB (LlamaIndex pulls NumPy, NLTK, SQLAlchemy, Pillow), against ~80 MB for the other images. Public GHCR images have no size limit; keep it public, or slim it before Week 7 if it must be private. |
 | RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |

@@ -1,0 +1,9 @@
+dagster==1.13.25
+dagster-webserver==1.13.25
+dagster-postgres==0.29.25
+dagster-aws==0.29.25
+mlflow-skinny==3.16.1
+scikit-learn==1.9.1
+pandas==3.0.6
+optuna==5.0.0
+skops==0.16.0

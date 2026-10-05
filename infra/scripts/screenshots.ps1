@@ -23,6 +23,9 @@ $pages = [ordered]@{
     chat     = @('http://chat.local/', "document.body.innerText.includes('Sign in')", 60)
     agent    = @('http://agent.local/', "!!document.querySelector('[data-testid=stChatInput] textarea') && document.body.innerText.includes('Tools:')", 60)
     headlamp = @('http://headlamp.local/', "document.body.innerText.includes('Authentication')", 30)
+    mlflow   = @('http://mlflow.local/#/models/message-triage', "document.body.innerText.includes('champion')", 60)
+    dagster  = @('http://dagster.local/assets/triage_model', "document.body.innerText.includes('test_f1')", 60)
+    s3       = @('http://s3.local/', "!!document.querySelector('input[type=password]')", 30)
 }
 
 # --- minimal DevTools protocol client (System.Net.WebSockets, works in Windows PowerShell 5.1)

@@ -66,6 +66,19 @@ import httpx
 d = httpx.post('http://agent.agent.svc.cluster.local:8000/chat', json={'message': 'What is on my todo list?'}, timeout=900).json()
 print('steps', [s['tool'] for s in d['steps']], '%.1fs' % d['seconds'], '| sources:', d['answer'].rpartition('Sources: ')[2][:80] or 'none')"
 
+echo "== mlops (postgres, seaweedfs, mlflow, dagster, champion model)"
+kubectl -n storage exec deploy/postgres -- psql -U postgres -tAc \
+  "select string_agg(datname, ' ') from pg_database where datname in ('mlflow', 'dagster')"
+kubectl -n storage exec deploy/seaweedfs -- sh -c 'echo s3.bucket.list | weed shell 2>/dev/null' | grep -E 'mlflow|dagster'
+kubectl -n mlops exec deploy/dagster-daemon -- python -c "
+import mlflow
+from dagster import DagsterInstance
+v = mlflow.MlflowClient().get_model_version_by_alias('message-triage', 'champion')
+print('champion: message-triage v%s, test_f1 %s' % (v.version, v.tags.get('test_f1')))
+r = DagsterInstance.get().get_run_records(limit=1)
+print('last run:', r[0].dagster_run.job_name, r[0].dagster_run.status.value, r[0].create_timestamp.strftime('%Y-%m-%d %H:%M UTC') if r else 'none')
+" 2>&1 | grep -E '^(champion|last run)'
+
 echo "== qdrant write/read"
 Q=http://$(kubectl -n storage get svc qdrant -o jsonpath='{.spec.clusterIP}'):6333
 curl -s -X PUT "$Q/collections/verify_test" -H 'Content-Type: application/json' -d '{"vectors":{"size":4,"distance":"Cosine"}}'; echo
@@ -75,7 +88,7 @@ curl -s -X DELETE "$Q/collections/verify_test"; echo
 
 echo "== ingress (via WSL IP)"
 IP=$(hostname -I | awk '{print $1}'); echo "wsl ip $IP"
-for h in chat.local llm.local qdrant.local agent.local headlamp.local; do
+for h in chat.local llm.local qdrant.local agent.local headlamp.local mlflow.local dagster.local s3.local; do
   curl -s -o /dev/null -w "$h -> %{http_code}\n" -H "Host: $h" "http://$IP/"
 done
 

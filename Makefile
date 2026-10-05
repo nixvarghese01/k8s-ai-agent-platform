@@ -2,7 +2,7 @@
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 
-.PHONY: up local-up up-docker down local-down restart status deploy images test llm-reload rag-index headlamp-token teardown
+.PHONY: up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
 
 up:        ## start Ollama + k3s and wait until every pod is Ready
 	bash infra/scripts/platform.sh up
@@ -29,8 +29,8 @@ deploy:    ## apply every manifest under infra/k3s
 images:    ## build the agent, MCP server and UI images and load them into k3s
 	bash infra/scripts/build-images.sh
 
-test:      ## run the unit tests in a throwaway python container
-	docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$(CURDIR)":/src -w /src python:3.13-slim \
+test:      ## run the unit tests in a throwaway python container (pip cache kept in a volume)
+	docker run --rm -e PYTHONDONTWRITEBYTECODE=1 -v "$(CURDIR)":/src -v local-ai-pip-cache:/root/.cache/pip -w /src python:3.13-slim \
 	  sh -c "pip install -q --root-user-action=ignore -r tests/requirements.txt && python -m pytest -q -p no:cacheprovider tests"
 
 llm-reload: ## apply llm/litellm.yaml and restart LiteLLM to load its model list
@@ -40,6 +40,13 @@ llm-reload: ## apply llm/litellm.yaml and restart LiteLLM to load its model list
 
 rag-index: ## index the shared folder into Qdrant now (ARGS=--rebuild to start over)
 	bash infra/scripts/rag-index.sh $(ARGS)
+
+train:     ## run the message-triage training now (queued; watch it at http://dagster.local)
+	kubectl -n mlops exec deploy/dagster-daemon -- dagster job launch -j triage_training -w workspace.yaml
+
+s3-credentials: ## print the SeaweedFS admin UI password (user admin) and the S3 key pair
+	@printf 'admin UI (http://s3.local): admin / %s\n' "$$(kubectl -n storage get secret seaweedfs-secret -o jsonpath='{.data.admin-password}' | base64 -d)"
+	@printf 'S3 access key: %s\nS3 secret key: %s\n' "$$(kubectl -n storage get secret seaweedfs-secret -o jsonpath='{.data.access-key}' | base64 -d)" "$$(kubectl -n storage get secret seaweedfs-secret -o jsonpath='{.data.secret-key}' | base64 -d)"
 
 headlamp-token: ## print the Headlamp login token (cluster-admin; README §6.11)
 	@kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d; echo

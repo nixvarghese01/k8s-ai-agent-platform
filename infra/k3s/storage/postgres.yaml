@@ -1,0 +1,116 @@
+# Postgres 18: one instance for the platform's metadata (README §6.13). Databases mlflow and
+# dagster are created on first start (empty volume) by the init script below; later apps
+# (n8n, Langfuse) get theirs the same way, or with `kubectl exec` + CREATE DATABASE.
+# Passwords live in Secret storage/postgres-secret, created once by deploy.sh.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: storage
+data:
+  10-app-databases.sh: |
+    #!/bin/sh
+    set -e
+    psql -v ON_ERROR_STOP=1 --username "$POSTGRES_USER" <<EOSQL
+    CREATE ROLE mlflow LOGIN PASSWORD '$MLFLOW_DB_PASSWORD';
+    CREATE DATABASE mlflow OWNER mlflow;
+    CREATE ROLE dagster LOGIN PASSWORD '$DAGSTER_DB_PASSWORD';
+    CREATE DATABASE dagster OWNER dagster;
+    EOSQL
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: storage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: storage
+  labels:
+    app: postgres
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # one pod owns the volume
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      securityContext:
+        runAsUser: 70 # the image's postgres user (alpine)
+        runAsGroup: 70
+        fsGroup: 70
+      containers:
+        - name: postgres
+          # Pinned like LiteLLM: change tag + digest deliberately. A major version (19) needs
+          # pg_upgrade or dump/restore; a minor one (18.x) is a plain image change.
+          image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+          args: ["-c", "max_connections=50", "-c", "shared_buffers=64MB"]
+          ports:
+            - name: postgres
+              containerPort: 5432
+          envFrom:
+            - secretRef:
+                name: postgres-secret # POSTGRES_PASSWORD, MLFLOW_DB_PASSWORD, DAGSTER_DB_PASSWORD
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql # 18+ keeps PGDATA in a versioned subfolder
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+            - name: run
+              mountPath: /var/run/postgresql
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: postgres-data
+        - name: init
+          configMap:
+            name: postgres-init
+        - name: run
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: storage
+spec:
+  selector:
+    app: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres

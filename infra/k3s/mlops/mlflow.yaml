@@ -1,0 +1,98 @@
+# MLflow tracking server + model registry at http://mlflow.local (README §6.13).
+# Runs and the registry live in Postgres (database mlflow); artifacts (models, plots) go to
+# SeaweedFS s3://mlflow through the server's artifact proxy, so clients need only the MLflow URL:
+#   MLFLOW_TRACKING_URI=http://mlflow.mlops.svc.cluster.local:5000
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlops
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      containers:
+        - name: mlflow
+          image: local-ai/mlflow:dev
+          imagePullPolicy: Never
+          args:
+            - mlflow
+            - server
+            - --host=0.0.0.0
+            - --port=5000
+            - --workers=1
+            - --backend-store-uri=postgresql://mlflow:$(MLFLOW_DB_PASSWORD)@postgres.storage.svc.cluster.local:5432/mlflow
+            - --artifacts-destination=s3://mlflow
+            - --serve-artifacts
+            # Host headers MLflow accepts (DNS-rebinding protection): the ingress name and the
+            # in-cluster names. Add one here if you reach MLflow under another name.
+            - --allowed-hosts=mlflow.local,mlflow.mlops.svc.cluster.local:5000,mlflow.mlops.svc.cluster.local,mlflow.mlops:5000,mlflow:5000,localhost:5000,localhost
+          env:
+            - name: MLFLOW_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-db
+                  key: MLFLOW_DB_PASSWORD
+            - name: MLFLOW_S3_ENDPOINT_URL
+              value: http://seaweedfs.storage.svc.cluster.local:8333
+            # MLflow 3 otherwise starts a job runner for GenAI evaluation jobs: ~8 extra Python
+            # processes of ~240 MB each (OOM-killed at 1 GiB). Classic tracking + registry
+            # doesn't need it.
+            - name: MLFLOW_SERVER_ENABLE_JOB_EXECUTION
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: s3-credentials # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+          ports:
+            - name: http
+              containerPort: 5000
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 20m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlflow
+  namespace: mlops
+spec:
+  selector:
+    app: mlflow
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http

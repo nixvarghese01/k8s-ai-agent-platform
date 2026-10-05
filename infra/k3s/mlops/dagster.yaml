@@ -1,0 +1,143 @@
+# Dagster at http://dagster.local (README §6.13): webserver (UI, launches nothing itself) and
+# daemon (schedules; runs every queued run as a subprocess, one at a time). Both run the
+# local-ai/pipelines image (`make images`) and share the Postgres-backed instance config in
+# pipelines/dagster.yaml. Training runs in the daemon pod, so that's where CPU/RAM limits matter.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dagster-env
+  namespace: mlops
+data:
+  MLFLOW_TRACKING_URI: http://mlflow.mlops.svc.cluster.local:5000
+  MLFLOW_UI_URL: http://mlflow.local # links in Dagster's run metadata open in your browser
+  S3_ENDPOINT_URL: http://seaweedfs.storage.svc.cluster.local:8333
+  AWS_REGION: us-east-1 # SeaweedFS ignores it; boto3 wants one
+  SCHEDULE_TIMEZONE: Asia/Dubai # nightly training at 02:00 local time
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-webserver
+  namespace: mlops
+  labels:
+    app: dagster-webserver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dagster-webserver
+  template:
+    metadata:
+      labels:
+        app: dagster-webserver
+    spec:
+      containers:
+        - name: dagster-webserver
+          image: local-ai/pipelines:dev
+          imagePullPolicy: Never
+          args: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: DAGSTER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-db
+                  key: DAGSTER_DB_PASSWORD
+            - name: DAGSTER_PG_URL # read by pipelines/dagster.yaml
+              value: postgresql+psycopg2://dagster:$(DAGSTER_DB_PASSWORD)@postgres.storage.svc.cluster.local:5432/dagster
+          envFrom:
+            - configMapRef:
+                name: dagster-env
+            - secretRef:
+                name: s3-credentials # AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 20m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /server_info
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /server_info
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dagster-daemon
+  namespace: mlops
+  labels:
+    app: dagster-daemon
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # never two daemons on one instance
+  selector:
+    matchLabels:
+      app: dagster-daemon
+  template:
+    metadata:
+      labels:
+        app: dagster-daemon
+    spec:
+      containers:
+        - name: dagster-daemon
+          image: local-ai/pipelines:dev
+          imagePullPolicy: Never
+          args: ["dagster-daemon", "run", "-w", "workspace.yaml"]
+          env:
+            - name: DAGSTER_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-db
+                  key: DAGSTER_DB_PASSWORD
+            - name: DAGSTER_PG_URL # read by pipelines/dagster.yaml
+              value: postgresql+psycopg2://dagster:$(DAGSTER_DB_PASSWORD)@postgres.storage.svc.cluster.local:5432/dagster
+          envFrom:
+            - configMapRef:
+                name: dagster-env
+            - secretRef:
+                name: s3-credentials
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 384Mi
+            limits:
+              cpu: "2" # training is single-threaded per Optuna trial; 2 leaves room for the daemon
+              memory: 2Gi
+          livenessProbe:
+            exec:
+              command: ["dagster-daemon", "liveness-check"]
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dagster-webserver
+  namespace: mlops
+spec:
+  selector:
+    app: dagster-webserver
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

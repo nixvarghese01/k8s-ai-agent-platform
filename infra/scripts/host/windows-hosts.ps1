@@ -10,7 +10,7 @@ $begin = '# BEGIN local-ai-platform'
 $end = '# END local-ai-platform'
 # One name per line: Windows treats extra names on a line as aliases (CNAMEs) of the first,
 # and those don't resolve for ::1 (only the first name on each line would work).
-$names = 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'langfuse', 'grafana', 'minio', 'qdrant', 'argocd', 'headlamp'
+$names = 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'langfuse', 'grafana', 's3', 'qdrant', 'argocd', 'headlamp'
 $block = @($begin) + ($names | ForEach-Object { "::1 $_.local" }) + @($end)
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(

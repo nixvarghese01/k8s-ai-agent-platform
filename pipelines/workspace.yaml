@@ -1,0 +1,5 @@
+# Code locations the Dagster webserver and daemon load (both run this image)
+load_from:
+  - python_module:
+      module_name: triage.definitions
+      working_directory: /app
