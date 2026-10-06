@@ -6,15 +6,18 @@
 # document question and opens the retrieved passages (5–20 s on CPU). Pages behind a login
 # (Open WebUI, Headlamp) are captured at their login screen; no credentials are used.
 #   -Out <folder>  write somewhere else, e.g. to check every UI without touching the repo's images
-param([string[]]$Only, [string]$Out)
+#   -Edge          use Microsoft Edge instead of Chrome
+param([string[]]$Only, [string]$Out, [switch]$Edge)
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 $out = if ($Out) { $Out } else { "$repo\docs\screenshots" }
 New-Item -ItemType Directory -Force $out | Out-Null
 
-$browser = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
-    "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+$chrome = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
+$msedge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
+$browser = @($(if ($Edge) { $msedge } else { $chrome }), $msedge) | Where-Object { Test-Path $_ } | Select-Object -First 1
 if (-not $browser) { throw 'Chrome or Edge not found' }
+"browser: $browser"
 
 $question = 'What was decided in the meeting on 2026-10-01?'
 # name = url, JavaScript that is true once the page has rendered, seconds to wait for it
