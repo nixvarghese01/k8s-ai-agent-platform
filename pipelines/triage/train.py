@@ -73,7 +73,11 @@ def evaluate(model: Pipeline, test: pd.DataFrame) -> dict:
 
 
 def promote(client: MlflowClient, version: str, f1: float, name: str = MODEL_NAME) -> bool:
-    """Point the "champion" alias at this version if it beats the current champion's test F1."""
+    """Point the "champion" alias at this version if it beats the current champion's test F1.
+
+    Compared at the 4 decimals the tag stores: a re-run on the same data differs only in float
+    noise (seen: v2 replaced v1 at an identical 0.9759), and that isn't an improvement."""
+    f1 = round(f1, 4)
     client.set_model_version_tag(name, version, "test_f1", f"{f1:.4f}")
     try:
         champion = client.get_model_version_by_alias(name, "champion")

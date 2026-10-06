@@ -76,6 +76,31 @@ def test_train_registers_and_promotes_only_on_improvement(tracking):
     assert list(pred) == ["spam", "ham"]
 
 
+def test_promote_ignores_differences_below_the_shown_precision():
+    class Version:
+        def __init__(self, version, f1):
+            self.version, self.tags = version, {"test_f1": f"{f1:.4f}"}
+
+    class Client:
+        def __init__(self):
+            self.champion, self.tags = Version("1", 0.975903), {}
+
+        def set_model_version_tag(self, name, version, key, value):
+            self.tags[version] = value
+
+        def get_model_version_by_alias(self, name, alias):
+            return self.champion
+
+        def set_registered_model_alias(self, name, alias, version):
+            self.champion = Version(version, float(self.tags[version]))
+
+    c = Client()
+    assert not train.promote(c, "2", 0.9759036144578314)  # same score, float noise
+    assert c.champion.version == "1" and c.tags["2"] == "0.9759"
+    assert train.promote(c, "3", 0.9801)  # a real improvement moves the alias
+    assert c.champion.version == "3"
+
+
 def test_dagster_assets_end_to_end(tracking, monkeypatch):
     monkeypatch.setattr(data, "download", lambda: fake_zip())
     result = dg.materialize(

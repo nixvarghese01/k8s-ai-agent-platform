@@ -5,10 +5,11 @@
 # really rendered (Streamlit fills its page over a websocket after load). The agent page asks a
 # document question and opens the retrieved passages (5–20 s on CPU). Pages behind a login
 # (Open WebUI, Headlamp) are captured at their login screen; no credentials are used.
-param([string[]]$Only)
+#   -Out <folder>  write somewhere else, e.g. to check every UI without touching the repo's images
+param([string[]]$Only, [string]$Out)
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path "$PSScriptRoot\..\.."
-$out = "$repo\docs\screenshots"
+$out = if ($Out) { $Out } else { "$repo\docs\screenshots" }
 New-Item -ItemType Directory -Force $out | Out-Null
 
 $browser = @("$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
