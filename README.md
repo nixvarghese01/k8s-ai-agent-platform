@@ -672,8 +672,8 @@ Work down the list; each step depends only on the ones above it. If a step fails
 | # | Open | You should see | Quick check (PowerShell, signed out) |
 |---|---|---|---|
 | 0 | http://localhost:11434 | `Ollama is running` (host service, no login) | `curl.exe http://localhost:11434/api/tags` lists `llama3.2:3b`, `qwen2.5:3b`, `nomic-embed-text` |
-| 1 | https://auth.ai.local | Authelia sign-in, then "Authenticated" with a *Logout* button; a padlock in the address bar | `curl.exe -s -o NUL -w "%{http_code}" https://auth.ai.local` → `200` |
-| 2 | https://llm.ai.local | LiteLLM's API docs (Swagger) | `curl.exe -s -o NUL -w "%{http_code}" https://llm.ai.local` → `302` (to sign-in) |
+| 1 | https://auth.ai.local | Authelia sign-in, then "Authenticated" with a *Logout* button; a padlock in the address bar | `curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" https://auth.ai.local` → `200` |
+| 2 | https://llm.ai.local | LiteLLM's API docs (Swagger) | `curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" https://llm.ai.local` → `302` (to sign-in) |
 | 3 | https://qdrant.ai.local/dashboard | Qdrant's web UI, collection `docs` from the RAG index (6.12) | same → `302` |
 | 4 | https://chat.ai.local | Open WebUI's own sign-in (second layer); then pick `chat-default` and send "hi" | same → `302` |
 | 5 | https://agent.ai.local | Agent UI. Ask "What was decided in the meeting on 2026-10-01?" (5–10 s) and expand the 🔧 line | same → `302` |
@@ -682,7 +682,7 @@ Work down the list; each step depends only on the ones above it. If a step fails
 | 8 | https://dagster.ai.local | Dagster: *Catalog* → `triage_model`, *Automation* → `triage_nightly` | same → `302` |
 | 9 | https://s3.ai.local | SeaweedFS admin sign-in (second layer): user `admin`, password from `make s3-credentials` | same → `302` |
 
-Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a `404` comes from Traefik (no Ingress for that name: a typo, or not deployed yet); a certificate warning means `windows-trust-ca.ps1` hasn't run; "can't reach this site" means the hosts entry is missing.
+Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a `404` comes from Traefik (no Ingress for that name: a typo, or not deployed yet); a certificate warning means `windows-trust-ca.ps1` hasn't run (`curl.exe` needs `--ssl-no-revoke`: Windows' TLS asks for a revocation check that a private CA can't answer; browsers don't); "can't reach this site" means the hosts entry is missing.
 
 ### 10.2 Endpoint reference (live)
 
