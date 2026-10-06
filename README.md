@@ -736,6 +736,8 @@ Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scrip
 | ![Headlamp](docs/screenshots/headlamp.png) | ![MLflow](docs/screenshots/mlflow.png) |
 | **Dagster: `triage_model` materialized, check passed, nightly 02:00 GMT+4** | **SeaweedFS admin sign-in (https://s3.ai.local)** |
 | ![Dagster](docs/screenshots/dagster.png) | ![SeaweedFS](docs/screenshots/s3.png) |
+| **Single sign-on: https://auth.ai.local, trusted certificate (6.14)** | |
+| ![Authelia sign-in](docs/screenshots/auth.png) | |
 
 ### 10.5 Planned (not deployed yet)
 
