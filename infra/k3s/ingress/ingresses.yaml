@@ -1,14 +1,43 @@
-# Host-based routing through k3s's bundled Traefik. Each *.local name needs a
-# Windows hosts-file entry (README §6.7). An Ingress must live in its Service's namespace.
+# Host-based routing through k3s's bundled Traefik, HTTPS only (README §6.14). Each name needs a
+# Windows hosts-file entry (§6.7). An Ingress must live in its Service's namespace.
+# Every UI is behind single sign-on: the router.middlewares annotation sends each request to
+# Authelia first (auth/authelia.yaml); only auth.ai.local itself, the sign-in page, is open.
+# TLS: router.tls uses Traefik's default certificate, *.ai.local (ingress/tls.yaml).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth
+  namespace: auth
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: auth.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: authelia
+                port:
+                  name: http
+---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: chat
   namespace: ui
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: chat.local
+    - host: chat.ai.local
       http:
         paths:
           - path: /
@@ -24,10 +53,14 @@ kind: Ingress
 metadata:
   name: llm
   namespace: llm
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: llm.local
+    - host: llm.ai.local
       http:
         paths:
           - path: /
@@ -43,10 +76,14 @@ kind: Ingress
 metadata:
   name: qdrant
   namespace: storage
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: qdrant.local
+    - host: qdrant.ai.local
       http:
         paths:
           - path: /
@@ -62,10 +99,14 @@ kind: Ingress
 metadata:
   name: agent
   namespace: ui
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: agent.local
+    - host: agent.ai.local
       http:
         paths:
           - path: /
@@ -81,10 +122,14 @@ kind: Ingress
 metadata:
   name: headlamp
   namespace: ui
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: headlamp.local
+    - host: headlamp.ai.local
       http:
         paths:
           - path: /
@@ -100,10 +145,14 @@ kind: Ingress
 metadata:
   name: mlflow
   namespace: mlops
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: mlflow.local
+    - host: mlflow.ai.local
       http:
         paths:
           - path: /
@@ -119,10 +168,14 @@ kind: Ingress
 metadata:
   name: dagster
   namespace: mlops
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: dagster.local
+    - host: dagster.ai.local
       http:
         paths:
           - path: /
@@ -138,10 +191,14 @@ kind: Ingress
 metadata:
   name: s3
   namespace: storage
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:
-    - host: s3.local
+    - host: s3.ai.local
       http:
         paths:
           - path: /

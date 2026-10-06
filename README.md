@@ -49,7 +49,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | Layer | Tool | Purpose |
 |---|---|---|
 | Runtime | k3s (in WSL2) | Lightweight Kubernetes |
-| Ingress | Traefik (bundled with k3s) | Host-based routing to `*.local` UIs |
+| Ingress | Traefik (bundled with k3s) | Host-based routing to `*.ai.local` UIs |
 | LLM | Ollama: `llama3.2:3b`, `qwen2.5:3b`, `phi3:mini` | CPU inference |
 | Embeddings | `nomic-embed-text` (via Ollama) | Vector embeddings for RAG |
 | LLM gateway | LiteLLM | One OpenAI-compatible API and model aliases for every backend |
@@ -87,7 +87,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 ## 3. Architecture
 
 ```text
-Windows 11 (32 GB) ── browser ──► http://*.local (hosts file → ::1 → WSL)
+Windows 11 (32 GB) ── browser ──► http://*.ai.local (hosts file → ::1 → WSL)
    └── WSL2 (18 GB RAM, 8 cores)
          └── Ubuntu 26.04 (systemd enabled; services start on demand, see 6.6)
                ├── Ollama (systemd service on the WSL host, :11434)
@@ -151,11 +151,13 @@ local-ai-platform/
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── agent/rag.yaml        # RAG: mcp-rag search server + rag-index CronJob (6.12)
 │   │   ├── ui/open-webui.yaml
-│   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.local)
-│   │   ├── ui/headlamp.yaml      # Kubernetes dashboard (headlamp.local)
+│   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.ai.local)
+│   │   ├── ui/headlamp.yaml      # Kubernetes dashboard (headlamp.ai.local)
 │   │   ├── automation/n8n.yaml
 │   │   ├── observability/langfuse.yaml
-│   │   ├── ingress/ingresses.yaml
+│   │   ├── auth/authelia.yaml    # single sign-on for every *.ai.local UI (6.14)
+│   │   ├── ingress/ingresses.yaml # *.ai.local, HTTPS, behind auth/authelia
+│   │   ├── ingress/tls.yaml       # Traefik's default certificate (*.ai.local)
 │   │   └── ingress/traefik-config.yaml
 │   ├── argocd/
 │   │   ├── install.sh
@@ -169,7 +171,9 @@ local-ai-platform/
 │       │   ├── 04-install-docker.sh
 │       │   ├── 05-on-demand-services.sh
 │       │   ├── windows-wsl-idle.ps1
-│       │   ├── windows-hosts.ps1    # *.local → ::1 in the hosts file (admin)
+│       │   ├── 06-local-tls.sh      # local CA + *.ai.local certificate (6.14)
+│       │   ├── windows-hosts.ps1    # *.ai.local → ::1 in the hosts file (admin)
+│       │   ├── windows-trust-ca.ps1 # Windows trusts the local CA
 │       │   └── windows-thermal.ps1
 │       ├── platform.ps1    # up / down / status from Windows
 │       ├── platform.sh     # up / down / status inside Ubuntu
@@ -178,6 +182,7 @@ local-ai-platform/
 │       ├── teardown.sh     # delete all workloads and their volumes
 │       ├── screenshots.ps1 # capture the UIs into docs/screenshots/ (README 10.4)
 │       ├── rag-index.sh    # run the RAG indexer now (make rag-index)
+│       ├── set-login.sh    # choose the single sign-on username + password
 │       └── status.sh
 ├── agent/                  # LangGraph agent (6.10)
 │   ├── Dockerfile
@@ -364,23 +369,24 @@ Scripts only start and stop services; what runs inside k3s comes from the manife
 
 > **Every `up` starts fresh pods.** k3s would otherwise revive the previous run's pods, so `RESTARTS` and `AGE` would pile up across every `down`/`up`. `up` deletes them once the node is Ready and their Deployments create new ones (`RESTARTS 0`). Data on volumes (Open WebUI chats and accounts, Qdrant vectors) and the Ollama models are kept; only [`teardown`](infra/scripts/teardown.sh) deletes those. A `RESTARTS` count above 0 now means a real crash during this run.
 
-### 6.7 Local DNS for `*.local` hostnames
+### 6.7 Local DNS for `*.ai.local` hostnames
 
 Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin PowerShell, from the repo folder). It backs up the hosts file, adds the lines below between `# BEGIN/END local-ai-platform` markers, and is safe to re-run; `-Remove` takes them out again. Manual equivalent, in `C:\Windows\System32\drivers\etc\hosts` (as admin):
 
 ```text
-::1 chat.local
-::1 llm.local
-::1 agent.local
-::1 mlflow.local
-::1 dagster.local
-::1 n8n.local
-::1 langfuse.local
-::1 grafana.local
-::1 s3.local
-::1 qdrant.local
-::1 argocd.local
-::1 headlamp.local
+::1 auth.ai.local
+::1 chat.ai.local
+::1 llm.ai.local
+::1 agent.ai.local
+::1 mlflow.ai.local
+::1 dagster.ai.local
+::1 n8n.ai.local
+::1 langfuse.ai.local
+::1 grafana.ai.local
+::1 s3.ai.local
+::1 qdrant.ai.local
+::1 argocd.ai.local
+::1 headlamp.ai.local
 ```
 
 One name per line: Windows treats extra names on a line as aliases of the first, and those don't resolve for `::1`.
@@ -394,7 +400,7 @@ See [Thermal Management](#12-thermal-management). [`windows-thermal.ps1`](infra/
 
 ### 6.9 LLM gateway (LiteLLM): switching and adding models
 
-[`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml) runs [LiteLLM](https://docs.litellm.ai/) as an OpenAI-compatible gateway at `http://litellm.llm.svc.cluster.local:4000/v1` (API docs at http://llm.local). Clients ask for an **alias**, and the ConfigMap maps each alias to a real model:
+[`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml) runs [LiteLLM](https://docs.litellm.ai/) as an OpenAI-compatible gateway at `http://litellm.llm.svc.cluster.local:4000/v1` (API docs at https://llm.ai.local). Clients ask for an **alias**, and the ConfigMap maps each alias to a real model:
 
 | Alias | Model | Used by |
 |---|---|---|
@@ -416,11 +422,11 @@ make llm-reload                                           # apply + restart Lite
 
 Changing `embed-default` to another model changes the vectors. Re-index in Open WebUI afterwards (Admin Panel → Settings → Documents → Reindex).
 
-**Test from the command line** (Windows or WSL, needs the `llm.local` hosts entry):
+**Test from the command line** (Windows or WSL, needs the `llm.ai.local` hosts entry):
 
 ```bash
-curl -s http://llm.local/v1/models
-curl -s http://llm.local/v1/chat/completions -H 'Content-Type: application/json' \
+curl -s https://llm.ai.local/v1/models
+curl -s https://llm.ai.local/v1/chat/completions -H 'Content-Type: application/json' \
   -d '{"model":"chat-default","messages":[{"role":"user","content":"Say hi"}]}'
 ```
 
@@ -435,10 +441,10 @@ When Langfuse arrives (Week 6), add `success_callback: ["langfuse"]` under `lite
 
 ### 6.10 File agent (LangGraph + filesystem MCP)
 
-Open **http://agent.local**, ask about your files, and expand each 🔧 line to see which tool the agent called and what it got back.
+Open **https://agent.ai.local**, ask about your files, and expand each 🔧 line to see which tool the agent called and what it got back.
 
 ```text
-agent.local ─► agent-ui (Streamlit, ui) ─► agent (LangGraph + FastAPI, agent) ─► LiteLLM chat-tools ─► qwen2.5:3b
+agent.ai.local ─► agent-ui (Streamlit, ui) ─► agent (LangGraph + FastAPI, agent) ─► LiteLLM chat-tools ─► qwen2.5:3b
                                                   │
                                                   └─ MCP streamable HTTP ─► mcp-filesystem ─► E:\ai-files (read-only)
 ```
@@ -459,7 +465,7 @@ agent.local ─► agent-ui (Streamlit, ui) ─► agent (LangGraph + FastAPI, a
 
 ### 6.11 Cluster dashboard (Headlamp)
 
-Open **http://headlamp.local** to browse pods, logs, events and resource usage, open a shell in a container, or edit a resource. It's deployed by `make deploy` from [`ui/headlamp.yaml`](infra/k3s/ui/headlamp.yaml) (image pinned by tag + digest, like LiteLLM).
+Open **https://headlamp.ai.local** to browse pods, logs, events and resource usage, open a shell in a container, or edit a resource. It's deployed by `make deploy` from [`ui/headlamp.yaml`](infra/k3s/ui/headlamp.yaml) (image pinned by tag + digest, like LiteLLM).
 
 **Logging in:** Headlamp asks for a token, not a password. Copy it with:
 
@@ -467,13 +473,13 @@ Open **http://headlamp.local** to browse pods, logs, events and resource usage, 
 |---|---|
 | `.\infra\scripts\platform.ps1 headlamp-token` (copies it to the clipboard; runs as root, so no Ubuntu password is needed) | `make headlamp-token` (prints it) |
 
-The token belongs to the `ui/headlamp` ServiceAccount, which is **cluster-admin**: anyone who has it can change or delete anything in the cluster. That's acceptable while `headlamp.local` is reachable only from this PC (WSL NAT). Before exposing it, bind the ServiceAccount to the read-only `view` ClusterRole instead. To rotate the token: `kubectl -n ui delete secret headlamp-token`, then re-apply the manifest.
+The token belongs to the `ui/headlamp` ServiceAccount, which is **cluster-admin**: anyone who has it can change or delete anything in the cluster. That's acceptable while `headlamp.ai.local` is reachable only from this PC (WSL NAT). Before exposing it, bind the ServiceAccount to the read-only `view` ClusterRole instead. To rotate the token: `kubectl -n ui delete secret headlamp-token`, then re-apply the manifest.
 
-New hostname: re-run [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin) to add `headlamp.local`.
+New hostname: re-run [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin) to add `headlamp.ai.local`.
 
 ### 6.12 Document Q&A (RAG: LlamaIndex + Qdrant)
 
-Ask http://agent.local about what your documents *say* ("What was decided in the last meeting?"). The answer comes from the passages that match, with a **Sources:** line of `file:lines`; expand the 🔧 `search_documents (auto)` line to see them.
+Ask https://agent.ai.local about what your documents *say* ("What was decided in the last meeting?"). The answer comes from the passages that match, with a **Sources:** line of `file:lines`; expand the 🔧 `search_documents (auto)` line to see them.
 
 ```text
 E:\ai-files ─► rag-index (CronJob, every 15 min) ─ LlamaIndex: split ─► embed-default (LiteLLM) ─► Qdrant "docs"
@@ -496,20 +502,20 @@ question ─► agent: retrieve ─► mcp-rag search_documents ─► passages 
 
 **Why the agent retrieves before asking the model:** with `qwen2.5:3b` on CPU (measured 2026-10-03), handing the model a search tool went wrong in three ways. It often answered "I don't have access" instead of searching. When it did search, it searched again or called other tools after getting the passages, which cost 12–42 s. And with tools bound it sometimes returned an empty reply. Retrieving first and answering without tools takes **3–11 s (median ~7 s)** and was right on every test question. Passages count only if they score at least `MIN_SCORE` 0.60 and are within `SCORE_MARGIN` 0.05 of the best one: right passages scored 0.66–0.77, off-topic questions at most 0.53. Questions asking *which files* exist skip retrieval; otherwise the model described the README instead of listing the folder.
 
-**Tuning** (in `rag-config`, then `kubectl -n agent rollout restart deploy/mcp-rag`): `TOP_K` passages (4), `MIN_SCORE`, `SCORE_MARGIN`; `CHUNK_TOKENS` / `CHUNK_OVERLAP` need a `--rebuild`. The collection is visible at http://qdrant.local/dashboard → Collections → `docs`.
+**Tuning** (in `rag-config`, then `kubectl -n agent rollout restart deploy/mcp-rag`): `TOP_K` passages (4), `MIN_SCORE`, `SCORE_MARGIN`; `CHUNK_TOKENS` / `CHUNK_OVERLAP` need a `--rebuild`. The collection is visible at https://qdrant.ai.local/dashboard → Collections → `docs`.
 
 ### 6.13 Training pipeline (MLflow + Dagster + Optuna)
 
 A classical-ML pipeline next to the LLM side: a **message-triage** classifier (spam vs. normal message) trained on the public [SMS Spam Collection](https://archive.ics.uci.edu/dataset/228/sms+spam+collection) (5,574 messages, 13% spam). In Week 5 it becomes an agent tool (`classify_message`) and the basis of workflow 4 (email triage).
 
 ```text
-Dagster (dagster.local)  daemon: nightly 02:00 Asia/Dubai, or `make train` / "Materialize all"
+Dagster (dagster.ai.local)  daemon: nightly 02:00 Asia/Dubai, or `make train` / "Materialize all"
   sms_spam_raw ─► sms_spam_split ─► triage_model ──────────────► check: test F1 >= 0.90
   (UCI, sha256)   (80/20, seed 42)   Optuna: 30 trials × 5-fold CV
        │                │            final fit + test metrics
        └── SeaweedFS s3://dagster ───┘        │
                                               ▼
-                              MLflow (mlflow.local): runs + 30 child runs, model "message-triage"
+                              MLflow (mlflow.ai.local): runs + 30 child runs, model "message-triage"
                               Postgres (runs, registry)   SeaweedFS s3://mlflow (model files)
                               alias "champion" moves only when test F1 improves
 ```
@@ -517,14 +523,14 @@ Dagster (dagster.local)  daemon: nightly 02:00 Asia/Dubai, or `make train` / "Ma
 | Piece | Code | Manifest |
 |---|---|---|
 | Postgres 18: databases `mlflow`, `dagster` | — | [`storage/postgres.yaml`](infra/k3s/storage/postgres.yaml) |
-| SeaweedFS (`weed mini`): S3 API + admin UI at http://s3.local | — | [`storage/seaweedfs.yaml`](infra/k3s/storage/seaweedfs.yaml) |
+| SeaweedFS (`weed mini`): S3 API + admin UI at https://s3.ai.local | — | [`storage/seaweedfs.yaml`](infra/k3s/storage/seaweedfs.yaml) |
 | MLflow server: tracking, registry, artifact proxy to `s3://mlflow` | [`mlops/mlflow/`](mlops/mlflow/Dockerfile) | [`mlops/mlflow.yaml`](infra/k3s/mlops/mlflow.yaml) |
 | Dagster webserver + daemon | [`pipelines/`](pipelines/dagster.yaml) | [`mlops/dagster.yaml`](infra/k3s/mlops/dagster.yaml) |
 | Assets, job, nightly schedule, F1 check | [`triage/definitions.py`](pipelines/triage/definitions.py) | |
 | Dataset download (pinned sha256) and split | [`triage/data.py`](pipelines/triage/data.py) | |
 | Optuna tuning, MLflow logging, registry promotion | [`triage/train.py`](pipelines/triage/train.py) | |
 
-**Running it:** the schedule runs `triage_training` at 02:00 local time, when the laptop is coolest (§12). If the platform is down then, that night is skipped (Dagster doesn't replay missed nights). To train now: `make train` inside Ubuntu, or http://dagster.local → *Jobs* → `triage_training` → *Materialize all*. Runs queue and execute one at a time in the daemon pod (max 2 CPUs).
+**Running it:** the schedule runs `triage_training` at 02:00 local time, when the laptop is coolest (§12). If the platform is down then, that night is skipped (Dagster doesn't replay missed nights). To train now: `make train` inside Ubuntu, or https://dagster.ai.local → *Jobs* → `triage_training` → *Materialize all*. Runs queue and execute one at a time in the daemon pod (max 2 CPUs).
 
 **First run (2026-10-05):** 13.5 min on CPU (30 trials, ~25 s each, ~1.9 cores, 1.3 GiB). Best model: character 2–5-grams, `C` 49, balanced class weights.
 
@@ -547,6 +553,36 @@ model.predict(pd.DataFrame({"text": ["You have won a voucher, call now", "Dinner
 **Why SeaweedFS, not MinIO:** MinIO switched to a source-only distribution in late 2025, so there are no maintained images. SeaweedFS is Apache-2.0, actively maintained, and the replacement Kubeflow Pipelines chose. Its `mini` mode runs master, volume, filer, S3 API and admin UI in one ~180 MB process. Anything that speaks S3 (boto3, MLflow, Dagster) uses it unchanged; moving to AWS S3 or Azure Blob later means changing the endpoint URL.
 
 **Three things that bit during setup (fixed in the manifests):** MLflow 3 starts a GenAI job runner of ~8 Python processes (~240 MB each) by default and was OOM-killed at 1 GiB, so it's off (`MLFLOW_SERVER_ENABLE_JOB_EXECUTION=false`; 400 MB now). SQLAlchemy now picks psycopg 3 for `postgresql://`, so the MLflow image ships psycopg 3. Dagster's Postgres storage breaks under psycopg 3 (its `NOTIFY` query), so Dagster gets an explicit `postgresql+psycopg2://` URL.
+
+### 6.14 Single sign-on and HTTPS (Authelia)
+
+Every UI sits behind **one login**: open any `https://<name>.ai.local`, sign in once at https://auth.ai.local, and the session (12 h, or 2 h idle) opens all of them. Open WebUI, Headlamp and SeaweedFS keep their own login as a second layer.
+
+```text
+browser ─https─► Traefik (cert *.ai.local from the local CA)
+                   ├─ auth.ai.local ─────────────────────────► Authelia: sign-in page
+                   └─ any other *.ai.local ─ forwardAuth ─► Authelia: session cookie on ai.local?
+                                                ├─ no  ─► 302 to auth.ai.local, back after sign-in
+                                                └─ yes ─► the UI (chat, llm, agent, qdrant, headlamp, mlflow, dagster, s3)
+```
+
+| Piece | Where |
+|---|---|
+| Authelia 4.39 (users file, SQLite, brute-force lockout: 5 tries in 2 min → 10 min ban) | [`auth/authelia.yaml`](infra/k3s/auth/authelia.yaml) |
+| Traefik middleware `auth/authelia` on every ingress; HTTP → HTTPS redirect | [`ingress/ingresses.yaml`](infra/k3s/ingress/ingresses.yaml), [`traefik-config.yaml`](infra/k3s/ingress/traefik-config.yaml) |
+| Local CA + `*.ai.local` certificate (397 days; CA 10 years) | [`06-local-tls.sh`](infra/scripts/host/06-local-tls.sh) → Secret `kube-system/platform-tls`, [`ingress/tls.yaml`](infra/k3s/ingress/tls.yaml) |
+| Windows trusts the CA (Chrome, Edge) | [`windows-trust-ca.ps1`](infra/scripts/host/windows-trust-ca.ps1) |
+| Choose your username + password | [`set-login.sh`](infra/scripts/set-login.sh) |
+
+**First setup** (after `make deploy`): 1) `.\infra\scripts\host\windows-hosts.ps1` (admin) for the `*.ai.local` names; 2) `.\infra\scripts\host\windows-trust-ca.ps1` and click *Yes* on Windows' certificate warning; 3) `.\infra\scripts\platform.ps1 set-login` to choose your username and password (typed in the terminal, stored only as an argon2 hash in Secret `auth/authelia-users`). Until step 3, the only user is a bootstrap `admin` with a random password (Secret `auth/authelia-initial`, deleted by set-login).
+
+**Why the names changed from `*.local` to `*.ai.local`:** one sign-in has to cover every UI, so the session cookie is set on a parent domain, and browsers won't share a cookie across bare `.local`. Authelia also requires HTTPS, hence the local CA. Old `*.local` bookmarks no longer work.
+
+**Changing the password:** run `set-login` again (it signs everyone out). **Forgot it:** same; there's no e-mail reset. **2FA:** set the rule in `authelia.yaml` to `two_factor`, apply, and register an authenticator app at https://auth.ai.local. **Renewing the certificate** (yearly): `wsl -u root -- bash infra/scripts/host/06-local-tls.sh --renew`.
+
+**APIs:** in-cluster clients use the `*.svc.cluster.local` names and never pass the login. From Windows, `https://llm.ai.local` now needs a browser session; scripts should use a port-forward (§10.3).
+
+**Gotchas fixed during setup:** Kubernetes injects `AUTHELIA_PORT=tcp://...` for a Service named `authelia`, which Authelia reads as config and refuses to start (`enableServiceLinks: false`). Authelia rewrites `/app/.healthcheck.env` on start, so its root filesystem can't be read-only. Traefik on the host network used WSL's DNS and couldn't resolve `authelia.auth.svc.cluster.local` (`dnsPolicy: ClusterFirstWithHostNet`).
 
 ---
 
@@ -591,6 +627,7 @@ Deploys to laptop k3s
 | LangGraph + MCP servers | 1.5 GB |
 | Open WebUI + Agent UI | 768 MB |
 | Headlamp | 64 MB (limit 256 MB) |
+| Authelia (single sign-on) | 32 MB (limit 256 MB) |
 | n8n | 512 MB |
 | Langfuse | 512 MB |
 | Prometheus + Grafana | 768 MB |
@@ -630,44 +667,45 @@ Every URL below opens from Windows once the platform is up (`.\local-up`) and th
 
 ### 10.1 Open them one by one
 
-Work down the list; each step depends only on the ones above it. If a step fails, run `.\infra\scripts\platform.ps1 status` and check that pod.
+Work down the list; each step depends only on the ones above it. If a step fails, run `.\infra\scripts\platform.ps1 status` and check that pod. Step 1 signs you in for all the others ([6.14](#614-single-sign-on-and-https-authelia)).
 
-| # | Open | You should see | Quick check (PowerShell) |
+| # | Open | You should see | Quick check (PowerShell, signed out) |
 |---|---|---|---|
-| 1 | http://localhost:11434 | `Ollama is running` | `curl.exe http://localhost:11434/api/tags` lists `llama3.2:3b`, `qwen2.5:3b`, `nomic-embed-text` |
-| 2 | http://llm.local | LiteLLM's API docs (Swagger) | `curl.exe http://llm.local/v1/models` lists `chat-default`, `chat-tools`, `embed-default` |
-| 3 | http://qdrant.local/dashboard | Qdrant's web UI with the collections list (`docs` from the RAG index, 6.12) | `curl.exe http://qdrant.local/readyz` → `all shards are ready` |
-| 4 | http://chat.local | Open WebUI login; sign in with your existing account (signup is off). Pick `chat-default` and send "hi" | `curl.exe -o NUL -w "%{http_code}" http://chat.local` → `200` |
-| 5 | http://agent.local | Agent UI. Ask "What files are in my shared folder?" and expand the 🔧 lines (10–25 s on CPU) | `curl.exe -o NUL -w "%{http_code}" http://agent.local` → `200` |
-| 6 | http://headlamp.local | Headlamp asks for a token: run `.\infra\scripts\platform.ps1 headlamp-token` and paste it. Then **Workloads → Pods** shows every pod ([6.11](#611-cluster-dashboard-headlamp)) | `curl.exe -o NUL -w "%{http_code}" http://headlamp.local` → `200` |
-| 7 | http://mlflow.local | MLflow: *Experiments* → `message-triage` (runs with their trials), *Models* → `message-triage` with alias `champion` ([6.13](#613-training-pipeline-mlflow--dagster--optuna)) | `curl.exe http://mlflow.local/health` → `OK` |
-| 8 | http://dagster.local | Dagster: *Catalog* → `triage_model` (last run's metrics), *Automation* → `triage_nightly` schedule | `curl.exe -o NUL -w "%{http_code}" http://dagster.local/server_info` → `200` |
-| 9 | http://s3.local | SeaweedFS admin sign-in; user `admin`, password from `make s3-credentials`. *Object Store* → buckets `mlflow`, `dagster` | `curl.exe -o NUL -w "%{http_code}" http://s3.local` → `307` (to the sign-in page) |
+| 0 | http://localhost:11434 | `Ollama is running` (host service, no login) | `curl.exe http://localhost:11434/api/tags` lists `llama3.2:3b`, `qwen2.5:3b`, `nomic-embed-text` |
+| 1 | https://auth.ai.local | Authelia sign-in, then "Authenticated" with a *Logout* button; a padlock in the address bar | `curl.exe -s -o NUL -w "%{http_code}" https://auth.ai.local` → `200` |
+| 2 | https://llm.ai.local | LiteLLM's API docs (Swagger) | `curl.exe -s -o NUL -w "%{http_code}" https://llm.ai.local` → `302` (to sign-in) |
+| 3 | https://qdrant.ai.local/dashboard | Qdrant's web UI, collection `docs` from the RAG index (6.12) | same → `302` |
+| 4 | https://chat.ai.local | Open WebUI's own sign-in (second layer); then pick `chat-default` and send "hi" | same → `302` |
+| 5 | https://agent.ai.local | Agent UI. Ask "What was decided in the meeting on 2026-10-01?" (5–10 s) and expand the 🔧 line | same → `302` |
+| 6 | https://headlamp.ai.local | Headlamp's token login: `.\infra\scripts\platform.ps1 headlamp-token`, paste. **Workloads → Pods** shows every pod ([6.11](#611-cluster-dashboard-headlamp)) | same → `302` |
+| 7 | https://mlflow.ai.local | MLflow: *Models* → `message-triage` with alias `champion` ([6.13](#613-training-pipeline-mlflow--dagster--optuna)) | same → `302` |
+| 8 | https://dagster.ai.local | Dagster: *Catalog* → `triage_model`, *Automation* → `triage_nightly` | same → `302` |
+| 9 | https://s3.ai.local | SeaweedFS admin sign-in (second layer): user `admin`, password from `make s3-credentials` | same → `302` |
 
-A `404` from any `*.local` URL comes from Traefik itself: the hostname resolves but no Ingress matches it (a typo, or that service isn't deployed). A browser "can't reach this site" means the hosts entry is missing.
+Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a `404` comes from Traefik (no Ingress for that name: a typo, or not deployed yet); a certificate warning means `windows-trust-ca.ps1` hasn't run; "can't reach this site" means the hosts entry is missing.
 
 ### 10.2 Endpoint reference (live)
 
 | Service | From Windows | In-cluster (pod to pod) | Useful paths |
 |---|---|---|---|
 | Ollama (on the WSL host) | http://localhost:11434 | `http://ollama.llm.svc.cluster.local:11434` | `/api/version`, `/api/tags` (installed models), `/api/generate`, `/api/chat`, `/api/embed` |
-| LiteLLM gateway | http://llm.local | `http://litellm.llm.svc.cluster.local:4000` | `/` API docs, `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`, `/health/readiness` |
-| Qdrant | http://qdrant.local | `http://qdrant.storage.svc.cluster.local:6333` (REST), `:6334` (gRPC) | `/dashboard`, `/collections`, `/readyz` |
-| Open WebUI | http://chat.local | `http://open-webui.ui.svc.cluster.local:8080` | `/` |
-| Agent UI (Streamlit) | http://agent.local | `http://agent-ui.ui.svc.cluster.local:8501` | `/`, `/_stcore/health` |
-| Headlamp | http://headlamp.local | `http://headlamp.ui.svc.cluster.local:4466` | `/` |
+| LiteLLM gateway | https://llm.ai.local | `http://litellm.llm.svc.cluster.local:4000` | `/` API docs, `/v1/models`, `/v1/chat/completions`, `/v1/embeddings`, `/health/readiness` |
+| Qdrant | https://qdrant.ai.local | `http://qdrant.storage.svc.cluster.local:6333` (REST), `:6334` (gRPC) | `/dashboard`, `/collections`, `/readyz` |
+| Open WebUI | https://chat.ai.local | `http://open-webui.ui.svc.cluster.local:8080` | `/` |
+| Agent UI (Streamlit) | https://agent.ai.local | `http://agent-ui.ui.svc.cluster.local:8501` | `/`, `/_stcore/health` |
+| Headlamp | https://headlamp.ai.local | `http://headlamp.ui.svc.cluster.local:4466` | `/` |
 | Agent API (LangGraph) | not exposed, see 10.3 | `http://agent.agent.svc.cluster.local:8000` | `POST /chat`, `GET /tools`, `GET /health`, `/docs` (FastAPI) |
 | Filesystem MCP server | not exposed, see 10.3 | `http://mcp-filesystem.agent.svc.cluster.local:8000` | `/mcp` (MCP streamable HTTP), `/health` |
 | RAG MCP server | not exposed, see 10.3 | `http://mcp-rag.agent.svc.cluster.local:8000` | `/mcp` (tool `search_documents`), `/health` |
-| MLflow | http://mlflow.local | `http://mlflow.mlops.svc.cluster.local:5000` | `/` UI, `/health`, `/api/2.0/mlflow/...` (REST), `/api/2.0/mlflow-artifacts/...` (artifact proxy) |
-| Dagster | http://dagster.local | `http://dagster-webserver.mlops.svc.cluster.local:3000` | `/` UI, `/server_info`, `/graphql` |
-| SeaweedFS | http://s3.local (admin UI) | `http://seaweedfs.storage.svc.cluster.local:8333` (S3 API), `:23646` (admin UI) | S3: buckets `mlflow`, `dagster`; keys from `make s3-credentials` |
+| MLflow | https://mlflow.ai.local | `http://mlflow.mlops.svc.cluster.local:5000` | `/` UI, `/health`, `/api/2.0/mlflow/...` (REST), `/api/2.0/mlflow-artifacts/...` (artifact proxy) |
+| Dagster | https://dagster.ai.local | `http://dagster-webserver.mlops.svc.cluster.local:3000` | `/` UI, `/server_info`, `/graphql` |
+| SeaweedFS | https://s3.ai.local (admin UI) | `http://seaweedfs.storage.svc.cluster.local:8333` (S3 API), `:23646` (admin UI) | S3: buckets `mlflow`, `dagster`; keys from `make s3-credentials` |
 | Postgres | not exposed, see 10.3 | `postgres.storage.svc.cluster.local:5432` | databases `mlflow`, `dagster` |
 
 LiteLLM has no API key (README §15), so any client on this PC can call it. For example, from PowerShell:
 
 ```powershell
-curl.exe http://llm.local/v1/chat/completions -H "Content-Type: application/json" `
+curl.exe https://llm.ai.local/v1/chat/completions -H "Content-Type: application/json" `
   -d '{\"model\":\"chat-default\",\"messages\":[{\"role\":\"user\",\"content\":\"Say OK\"}]}'
 ```
 
@@ -689,14 +727,14 @@ WSL forwards `localhost` ports to Windows, so the browser on Windows reaches the
 
 Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scripts\screenshots.ps1` with the platform up; re-run it after UI changes). It drives headless Chrome, asks the agent one document question, and leaves login pages at their sign-in screen.
 
-| Agent UI (http://agent.local): document question, retrieved passage and sources, 6.6 s on CPU | LiteLLM API docs (http://llm.local) |
+| Agent UI (https://agent.ai.local): document question, retrieved passage and sources, 6.6 s on CPU | LiteLLM API docs (https://llm.ai.local) |
 |---|---|
 | ![Agent UI](docs/screenshots/agent.png) | ![LiteLLM](docs/screenshots/litellm.png) |
-| **Qdrant dashboard: collection `docs`, 65 chunks, 768-dim cosine** | **Open WebUI sign-in (http://chat.local)** |
+| **Qdrant dashboard: collection `docs`, 65 chunks, 768-dim cosine** | **Open WebUI sign-in (https://chat.ai.local)** |
 | ![Qdrant](docs/screenshots/qdrant.png) | ![Open WebUI](docs/screenshots/chat.png) |
-| **Headlamp token login (http://headlamp.local)** | **MLflow registry: `message-triage` v1, alias `champion`, test F1 0.9759** |
+| **Headlamp token login (https://headlamp.ai.local)** | **MLflow registry: `message-triage` v1, alias `champion`, test F1 0.9759** |
 | ![Headlamp](docs/screenshots/headlamp.png) | ![MLflow](docs/screenshots/mlflow.png) |
-| **Dagster: `triage_model` materialized, check passed, nightly 02:00 GMT+4** | **SeaweedFS admin sign-in (http://s3.local)** |
+| **Dagster: `triage_model` materialized, check passed, nightly 02:00 GMT+4** | **SeaweedFS admin sign-in (https://s3.ai.local)** |
 | ![Dagster](docs/screenshots/dagster.png) | ![SeaweedFS](docs/screenshots/s3.png) |
 
 ### 10.5 Planned (not deployed yet)
@@ -705,10 +743,10 @@ Their hosts entries already exist; until the service is deployed the URL returns
 
 | Service | URL | Week |
 |---|---|---|
-| n8n | http://n8n.local | 6 |
-| Langfuse | http://langfuse.local | 6 |
-| Grafana | http://grafana.local | 6 |
-| ArgoCD | http://argocd.local | 7 |
+| n8n | https://n8n.ai.local | 6 |
+| Langfuse | https://langfuse.ai.local | 6 |
+| Grafana | https://grafana.ai.local | 6 |
+| ArgoCD | https://argocd.ai.local | 7 |
 
 ---
 
@@ -758,7 +796,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 
 ### Definition of done per week
 - Manifests committed under `infra/k3s/`
-- Service reachable at its `*.local` URL
+- Service reachable at its `*.ai.local` URL
 - Tests in `tests/` pass in CI
 - Short notes added under `docs/`
 
@@ -795,7 +833,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
 | Image sizes | `local-ai/mlflow` 1.3 GB and `local-ai/pipelines` 1.1 GB (MLflow, Dagster, scikit-learn, pandas), on top of `mcp-rag`. Fine locally; for GHCR in Week 7 keep them public or slim them (e.g. `mlflow-skinny` for the server isn't enough: it lacks the server). |
 | Nightly training | Runs only if the platform is up at 02:00; missed nights aren't replayed. Same data + fixed seed give the same score, so the champion only changes when the data or the search space does. |
-| MLflow / Dagster auth | Neither UI has a login; they're reachable only from this PC (WSL NAT). Add auth (MLflow `basic-auth` app, a proxy for Dagster) before exposing them. |
+| Single sign-on | **Resolved:** every UI is behind Authelia over HTTPS ([6.14](#614-single-sign-on-and-https-authelia)). One factor (password) for now; switch the rule to `two_factor` before exposing anything beyond this PC. The local CA's private key (`/var/lib/local-ai-ca`, root-only in WSL) can sign certificates your browser trusts: keep it there, and remove the CA with `windows-trust-ca.ps1 -Remove` if you retire the platform. |
 | RAG image size | `local-ai/mcp-rag` is ~600 MB (LlamaIndex pulls NumPy, NLTK, SQLAlchemy, Pillow), against ~80 MB for the other images. Public GHCR images have no size limit; keep it public, or slim it before Week 7 if it must be private. |
 | RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |

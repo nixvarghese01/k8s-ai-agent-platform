@@ -1,4 +1,4 @@
-# Dagster at http://dagster.local (README §6.13): webserver (UI, launches nothing itself) and
+# Dagster at https://dagster.ai.local (README §6.13): webserver (UI, launches nothing itself) and
 # daemon (schedules; runs every queued run as a subprocess, one at a time). Both run the
 # local-ai/pipelines image (`make images`) and share the Postgres-backed instance config in
 # pipelines/dagster.yaml. Training runs in the daemon pod, so that's where CPU/RAM limits matter.
@@ -9,7 +9,7 @@ metadata:
   namespace: mlops
 data:
   MLFLOW_TRACKING_URI: http://mlflow.mlops.svc.cluster.local:5000
-  MLFLOW_UI_URL: http://mlflow.local # links in Dagster's run metadata open in your browser
+  MLFLOW_UI_URL: https://mlflow.ai.local # links in Dagster's run metadata open in your browser
   S3_ENDPOINT_URL: http://seaweedfs.storage.svc.cluster.local:8333
   AWS_REGION: us-east-1 # SeaweedFS ignores it; boto3 wants one
   SCHEDULE_TIMEZONE: Asia/Dubai # nightly training at 02:00 local time

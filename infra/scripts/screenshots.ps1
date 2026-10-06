@@ -3,11 +3,17 @@
 #
 # Drives headless Chrome (or Edge) over the DevTools protocol, so it waits until each page has
 # really rendered (Streamlit fills its page over a websocket after load). The agent page asks a
-# document question and opens the retrieved passages (5–20 s on CPU). Pages behind a login
-# (Open WebUI, Headlamp) are captured at their login screen; no credentials are used.
+# document question and opens the retrieved passages (5–20 s on CPU).
+# Every UI is behind single sign-on (README §6.14): the script captures the sign-in page, then
+# signs in once with your platform login (asked for, or $env:LOCAL_AI_USER / LOCAL_AI_PASSWORD).
+# Apps with a login of their own (Open WebUI, Headlamp, SeaweedFS) stay at their sign-in screen.
 #   -Out <folder>  write somewhere else, e.g. to check every UI without touching the repo's images
 #   -Edge          use Microsoft Edge instead of Chrome
 param([string[]]$Only, [string]$Out, [switch]$Edge)
+$user = if ($env:LOCAL_AI_USER) { $env:LOCAL_AI_USER } else { Read-Host 'Platform username' }
+$password = if ($env:LOCAL_AI_PASSWORD) { $env:LOCAL_AI_PASSWORD } else {
+    [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host 'Password' -AsSecureString)))
+}
 $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 $out = if ($Out) { $Out } else { "$repo\docs\screenshots" }
@@ -22,14 +28,15 @@ if (-not $browser) { throw 'Chrome or Edge not found' }
 $question = 'What was decided in the meeting on 2026-10-01?'
 # name = url, JavaScript that is true once the page has rendered, seconds to wait for it
 $pages = [ordered]@{
-    litellm  = @('http://llm.local/', "!!document.querySelector('.swagger-ui .info')", 30)
-    qdrant   = @('http://qdrant.local/dashboard', "document.body.innerText.includes('Collections')", 30)
-    chat     = @('http://chat.local/', "document.body.innerText.includes('Sign in')", 60)
-    agent    = @('http://agent.local/', "!!document.querySelector('[data-testid=stChatInput] textarea') && document.body.innerText.includes('Tools:')", 60)
-    headlamp = @('http://headlamp.local/', "document.body.innerText.includes('Authentication')", 30)
-    mlflow   = @('http://mlflow.local/#/models/message-triage', "document.body.innerText.includes('champion')", 60)
-    dagster  = @('http://dagster.local/assets/triage_model', "document.body.innerText.includes('test_f1')", 60)
-    s3       = @('http://s3.local/', "!!document.querySelector('input[type=password]')", 30)
+    auth     = @('https://auth.ai.local/', "!!document.querySelector('#password-textfield')", 30)  # first: signs in
+    litellm  = @('https://llm.ai.local/', "!!document.querySelector('.swagger-ui .info')", 30)
+    qdrant   = @('https://qdrant.ai.local/dashboard', "document.body.innerText.includes('Collections')", 30)
+    chat     = @('https://chat.ai.local/', "document.body.innerText.includes('Sign in')", 60)
+    agent    = @('https://agent.ai.local/', "!!document.querySelector('[data-testid=stChatInput] textarea') && document.body.innerText.includes('Tools:')", 60)
+    headlamp = @('https://headlamp.ai.local/', "document.body.innerText.includes('Authentication')", 30)
+    mlflow   = @('https://mlflow.ai.local/#/models/message-triage', "document.body.innerText.includes('champion')", 60)
+    dagster  = @('https://dagster.ai.local/assets/triage_model', "document.body.innerText.includes('test_f1')", 60)
+    s3       = @('https://s3.ai.local/', "!!document.querySelector('input[type=password]')", 30)
 }
 
 # --- minimal DevTools protocol client (System.Net.WebSockets, works in Windows PowerShell 5.1)
@@ -65,7 +72,8 @@ function Wait-Js([string]$expr, [int]$seconds) {
 
 $port = 9333
 $profileDir = Join-Path $env:TEMP 'local-ai-screenshots'  # throwaway profile; your browser is untouched
-$proc = Start-Process $browser -PassThru -WindowStyle Hidden -ArgumentList @('--headless=new', '--disable-gpu',
+# --ignore-certificate-errors: works before windows-trust-ca.ps1 too (throwaway profile only)
+$proc = Start-Process $browser -PassThru -WindowStyle Hidden -ArgumentList @('--headless=new', '--disable-gpu', '--ignore-certificate-errors',
     '--hide-scrollbars', "--remote-debugging-port=$port", "--user-data-dir=`"$profileDir`"", 'about:blank')
 try {
     $target = $null
@@ -79,7 +87,7 @@ try {
     Send-Cdp 'Emulation.setDeviceMetricsOverride' @{ width = 1400; height = 900; deviceScaleFactor = 1; mobile = $false } | Out-Null
 
     foreach ($name in $pages.Keys) {
-        if ($Only -and $name -notin $Only) { continue }
+        if ($Only -and $name -notin $Only -and $name -ne 'auth') { continue }  # sign-in always runs
         $url, $ready, $wait = $pages[$name]
         Send-Cdp 'Page.navigate' @{ url = $url } | Out-Null
         if (-not (Wait-Js $ready $wait)) { Write-Warning "$name did not render in $wait s: $url"; continue }
@@ -96,9 +104,24 @@ try {
             Send-Cdp 'Runtime.evaluate' @{ expression = "document.querySelector('[data-testid=stExpander] summary')?.click()" } | Out-Null
         }
         Start-Sleep -Seconds 2  # let animations settle
-        $shot = Send-Cdp 'Page.captureScreenshot' @{ format = 'png' }
-        [IO.File]::WriteAllBytes("$out\$name.png", [Convert]::FromBase64String($shot.data))
-        "{0,-9} {1} ({2:N0} KB)" -f $name, $url, ((Get-Item "$out\$name.png").Length / 1KB)
+        if (-not $Only -or $name -in $Only) {
+            $shot = Send-Cdp 'Page.captureScreenshot' @{ format = 'png' }
+            [IO.File]::WriteAllBytes("$out\$name.png", [Convert]::FromBase64String($shot.data))
+            "{0,-9} {1} ({2:N0} KB)" -f $name, $url, ((Get-Item "$out\$name.png").Length / 1KB)
+        }
+
+        if ($name -eq 'auth') {
+            # Sign in once; the session cookie on ai.local then opens every other page
+            foreach ($f in @(@('username-textfield', $user), @('password-textfield', $password))) {
+                Send-Cdp 'Runtime.evaluate' @{ expression = "document.getElementById('$($f[0])').focus()" } | Out-Null
+                Send-Cdp 'Input.insertText' @{ text = $f[1] } | Out-Null
+            }
+            Send-Cdp 'Runtime.evaluate' @{ expression = "document.getElementById('sign-in-button').click()" } | Out-Null
+            if (-not (Wait-Js "!document.querySelector('#password-textfield') && /log ?out/i.test(document.body.innerText)" 20)) {
+                throw 'sign-in failed: wrong username/password, or locked out after 5 tries (wait 10 min)'
+            }
+            "signed in as $user"
+        }
     }
 }
 finally {

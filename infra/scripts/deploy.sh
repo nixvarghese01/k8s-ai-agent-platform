@@ -41,11 +41,31 @@ if ! kubectl -n mlops get secret s3-credentials >/dev/null 2>&1; then
     --from-literal=AWS_ACCESS_KEY_ID="$(get storage seaweedfs-secret access-key)" \
     --from-literal=AWS_SECRET_ACCESS_KEY="$(get storage seaweedfs-secret secret-key)"
 fi
+
+# HTTPS certificate for *.ai.local (README §6.14), from the local CA; root reads the CA key
+if ! kubectl -n kube-system get secret platform-tls >/dev/null 2>&1; then
+  if [ "$EUID" -eq 0 ]; then
+    bash infra/scripts/host/06-local-tls.sh
+  else
+    echo "No TLS certificate yet: run  wsl -u root -- bash infra/scripts/host/06-local-tls.sh  then deploy again" >&2
+    exit 1
+  fi
+fi
+
+# Single sign-on (Authelia): its own signing/encryption secrets, and a first user to replace
+if ! kubectl -n auth get secret authelia-secrets >/dev/null 2>&1; then
+  kubectl -n auth create secret generic authelia-secrets --from-literal=session-secret="$(rand 32)" \
+    --from-literal=storage-encryption-key="$(rand 32)" --from-literal=jwt-secret="$(rand 32)"
+fi
+if ! kubectl -n auth get secret authelia-users >/dev/null 2>&1; then
+  bash infra/scripts/set-login.sh --bootstrap
+fi
 set -x
 
 kubectl apply -R -f infra/k3s/
 kubectl -n llm rollout status deploy/litellm --timeout=10m
 kubectl -n storage rollout status deploy/qdrant --timeout=10m
+kubectl -n auth rollout status deploy/authelia --timeout=5m
 kubectl -n storage rollout status deploy/postgres --timeout=5m
 kubectl -n storage rollout status deploy/seaweedfs --timeout=5m
 kubectl -n ui rollout status deploy/open-webui --timeout=15m

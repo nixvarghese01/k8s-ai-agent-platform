@@ -1,5 +1,5 @@
 # LiteLLM: one OpenAI-compatible gateway in front of every model backend (README §6.9).
-#   In-cluster: http://litellm.llm.svc.cluster.local:4000/v1   API docs: http://llm.local/
+#   In-cluster: http://litellm.llm.svc.cluster.local:4000/v1   API docs: https://llm.ai.local/
 # Clients (Open WebUI, later the agent, n8n) ask for an alias such as `chat-default`; the
 # model_list below maps each alias to a real model. To switch or add a model, edit this
 # ConfigMap, then: kubectl apply -f infra/k3s/llm/litellm.yaml && make llm-reload

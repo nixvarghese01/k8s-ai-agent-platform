@@ -1,8 +1,8 @@
-# Headlamp at http://headlamp.local: a web UI for the cluster (pods, logs, events, shell,
+# Headlamp at https://headlamp.ai.local: a web UI for the cluster (pods, logs, events, shell,
 # resource usage). It logs in with a service-account token, not a password: from Windows run
 # `.\infra\scripts\platform.ps1 headlamp-token` (copies it), or `make headlamp-token` inside
 # Ubuntu (README §6.11). The token is cluster-admin, so treat it like a root password. Fine while
-# headlamp.local is reachable only from this PC (WSL NAT); use a read-only role before exposing it.
+# headlamp.ai.local is reachable only from this PC (WSL NAT); use a read-only role before exposing it.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -53,7 +53,7 @@ spec:
       serviceAccountName: headlamp
       containers:
         - name: headlamp
-          # Pinned like LiteLLM: change tag + digest deliberately, apply, check headlamp.local
+          # Pinned like LiteLLM: change tag + digest deliberately, apply, check headlamp.ai.local
           image: ghcr.io/headlamp-k8s/headlamp:v0.45.0@sha256:db3f0e0fc58d358d41daa3fe7fc852437552c7ee873c3645470f7b86a8e0db49
           args:
             - -in-cluster

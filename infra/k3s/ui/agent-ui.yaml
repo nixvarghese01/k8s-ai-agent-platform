@@ -1,4 +1,4 @@
-# Agent UI (Streamlit) at http://agent.local: chat with the file agent (agent/agent.yaml) and
+# Agent UI (Streamlit) at https://agent.ai.local: chat with the file agent (agent/agent.yaml) and
 # see its tool calls. Image built locally by infra/scripts/build-images.sh (`make images`).
 apiVersion: apps/v1
 kind: Deployment

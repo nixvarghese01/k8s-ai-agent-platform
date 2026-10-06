@@ -1,5 +1,5 @@
 # Qdrant vector DB. In-cluster URL: http://qdrant.storage.svc.cluster.local:6333
-# Dashboard: http://qdrant.local/dashboard (see ingress/ingresses.yaml)
+# Dashboard: https://qdrant.ai.local/dashboard (see ingress/ingresses.yaml)
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

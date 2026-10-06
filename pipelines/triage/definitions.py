@@ -4,7 +4,7 @@
 
 Training runs at night (02:00, SCHEDULE_TIMEZONE) because that's when the laptop is coolest
 (README §12). If the platform is down then, the run is simply skipped; run it by hand from
-http://dagster.local (Materialize all) or `make train`.
+https://dagster.ai.local (Materialize all) or `make train`.
 """
 
 import os
@@ -15,7 +15,7 @@ import pandas as pd
 from triage import data, train
 
 TIMEZONE = os.environ.get("SCHEDULE_TIMEZONE", "Asia/Dubai")
-MLFLOW_UI = os.environ.get("MLFLOW_UI_URL", "http://mlflow.local")
+MLFLOW_UI = os.environ.get("MLFLOW_UI_URL", "https://mlflow.ai.local")
 MIN_TEST_F1 = 0.90
 
 

@@ -1,4 +1,4 @@
-# README §6.7: point the platform's *.local hostnames at ::1 (Traefik on the WSL host's ports 80/443).
+# README §6.7: point the platform's *.ai.local hostnames at ::1 (Traefik on the WSL host's ports 80/443).
 # Run in PowerShell as admin, from the repo folder. Safe to re-run: it replaces its own block.
 # Backs up the hosts file to hosts.bak-<timestamp> first.
 # Undo: run again with -Remove
@@ -10,8 +10,9 @@ $begin = '# BEGIN local-ai-platform'
 $end = '# END local-ai-platform'
 # One name per line: Windows treats extra names on a line as aliases (CNAMEs) of the first,
 # and those don't resolve for ::1 (only the first name on each line would work).
-$names = 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'langfuse', 'grafana', 's3', 'qdrant', 'argocd', 'headlamp'
-$block = @($begin) + ($names | ForEach-Object { "::1 $_.local" }) + @($end)
+# Every UI lives under ai.local, so one sign-on cookie (domain ai.local) covers them all (§6.14)
+$names = 'auth', 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'langfuse', 'grafana', 's3', 'qdrant', 'argocd', 'headlamp'
+$block = @($begin) + ($names | ForEach-Object { "::1 $_.ai.local" }) + @($end)
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)

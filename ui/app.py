@@ -1,4 +1,4 @@
-"""Agent UI (Streamlit) at http://agent.local: chat with the agent and see every tool call."""
+"""Agent UI (Streamlit) at https://agent.ai.local: chat with the agent and see every tool call."""
 
 import os
 import uuid

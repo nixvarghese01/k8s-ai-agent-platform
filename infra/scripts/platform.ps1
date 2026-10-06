@@ -5,10 +5,11 @@
 #   .\infra\scripts\platform.ps1 status
 #   .\infra\scripts\platform.ps1 restart [-Docker] [-KeepWsl]  down, then up: a full cold restart
 #   .\infra\scripts\platform.ps1 headlamp-token  copy the Headlamp login token to the clipboard
+#   .\infra\scripts\platform.ps1 set-login       choose the single sign-on username + password
 #
 # `down` without -KeepWsl closes any open Ubuntu terminals too.
 param(
-    [Parameter(Mandatory, Position = 0)][ValidateSet('up', 'down', 'status', 'restart', 'headlamp-token')][string]$Action,
+    [Parameter(Mandatory, Position = 0)][ValidateSet('up', 'down', 'status', 'restart', 'headlamp-token', 'set-login')][string]$Action,
     [switch]$Docker,
     [switch]$KeepWsl
 )
@@ -44,7 +45,12 @@ switch ($Action) {
         $token = wsl -d $distro -u root -- sh -c "kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d"
         if ($LASTEXITCODE -ne 0 -or -not $token) { throw 'No token: is the platform up and ui/headlamp.yaml deployed?' }
         Set-Clipboard -Value $token
-        'Headlamp token copied to the clipboard; paste it at http://headlamp.local'
+        'Headlamp token copied to the clipboard; paste it at https://headlamp.ai.local'
+    }
+    'set-login' {
+        # Interactive: the password is typed into the terminal, never passed on a command line
+        wsl -d $distro -u root -- bash "$here/set-login.sh"
+        if ($LASTEXITCODE -ne 0) { throw "set-login failed ($LASTEXITCODE)" }
     }
     'down' {
         Invoke-Platform @('down')

@@ -1,5 +1,5 @@
 # Open WebUI chat, backed by LiteLLM (LLM + embeddings, served by host Ollama) and Qdrant (RAG vectors).
-# UI: http://chat.local (see ingress/ingresses.yaml). The first account created becomes admin.
+# UI: https://chat.ai.local (see ingress/ingresses.yaml). The first account created becomes admin.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:

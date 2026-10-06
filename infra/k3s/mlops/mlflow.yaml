@@ -1,4 +1,4 @@
-# MLflow tracking server + model registry at http://mlflow.local (README §6.13).
+# MLflow tracking server + model registry at https://mlflow.ai.local (README §6.13).
 # Runs and the registry live in Postgres (database mlflow); artifacts (models, plots) go to
 # SeaweedFS s3://mlflow through the server's artifact proxy, so clients need only the MLflow URL:
 #   MLFLOW_TRACKING_URI=http://mlflow.mlops.svc.cluster.local:5000
@@ -34,7 +34,7 @@ spec:
             - --serve-artifacts
             # Host headers MLflow accepts (DNS-rebinding protection): the ingress name and the
             # in-cluster names. Add one here if you reach MLflow under another name.
-            - --allowed-hosts=mlflow.local,mlflow.mlops.svc.cluster.local:5000,mlflow.mlops.svc.cluster.local,mlflow.mlops:5000,mlflow:5000,localhost:5000,localhost
+            - --allowed-hosts=mlflow.ai.local,mlflow.mlops.svc.cluster.local:5000,mlflow.mlops.svc.cluster.local,mlflow.mlops:5000,mlflow:5000,localhost:5000,localhost
           env:
             - name: MLFLOW_DB_PASSWORD
               valueFrom:

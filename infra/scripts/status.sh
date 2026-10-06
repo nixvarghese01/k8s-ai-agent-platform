@@ -86,11 +86,14 @@ curl -s -X PUT "$Q/collections/verify_test/points?wait=true" -H 'Content-Type: a
 curl -s -X POST "$Q/collections/verify_test/points/query" -H 'Content-Type: application/json' -d '{"query":[0.1,0.2,0.3,0.4],"limit":1}'; echo
 curl -s -X DELETE "$Q/collections/verify_test"; echo
 
-echo "== ingress (via WSL IP)"
+echo "== ingress (https via WSL IP): sign-in page 200, every UI 302 to sign-in, http 308 to https"
 IP=$(hostname -I | awk '{print $1}'); echo "wsl ip $IP"
-for h in chat.local llm.local qdrant.local agent.local headlamp.local mlflow.local dagster.local s3.local; do
-  curl -s -o /dev/null -w "$h -> %{http_code}\n" -H "Host: $h" "http://$IP/"
+for h in auth chat llm qdrant agent headlamp mlflow dagster s3; do
+  curl -sk --resolve "$h.ai.local:443:$IP" -o /dev/null -w "$h.ai.local -> %{http_code} %{redirect_url}\n" "https://$h.ai.local/" |
+    sed 's|https://auth.ai.local/?rd=.*|(sign-in)|'
 done
+curl -s -o /dev/null -w "http://chat.ai.local -> %{http_code} %{redirect_url}\n" -H "Host: chat.ai.local" "http://$IP/"
+echo | openssl s_client -connect "$IP:443" -servername chat.ai.local 2>/dev/null | openssl x509 -noout -subject -enddate
 
 echo "== docker"
 docker version --format 'engine {{.Server.Version}}'
