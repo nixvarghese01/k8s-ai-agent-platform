@@ -911,6 +911,8 @@ Their hosts entries already exist; until the service is deployed the URL returns
 
 On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from ~10.9 s to ~13.8 s, including model load.
 
+
+**Measured (2026-10-08, i7-9850H, all profiles on)** with [`windows-temps.ps1`](infra/scripts/host/windows-temps.ps1) (LibreHardwareMonitor, open source; `-Load` runs this comparison): idle 59 °C package (max 61), Ollama generating 67 °C average, **70 °C max** at ~26% CPU (the Ollama thread cap), 30 °C below the 100 °C limit. Run `.\infra\scripts\host\windows-temps.ps1` any time for current CPU, GPU and SSD temperatures.
 ---
 
 ## 13. 8-Week Build Plan
