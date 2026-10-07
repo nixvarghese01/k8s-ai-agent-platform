@@ -147,7 +147,7 @@ local-ai-platform/
 │   │   ├── storage/postgres.yaml  # metadata DBs for MLflow and Dagster
 │   │   ├── mlops/mlflow.yaml      # tracking server + model registry (6.13)
 │   │   ├── mlops/dagster.yaml     # webserver + daemon (schedules, runs)
-│   │   ├── mlops/bentoml.yaml
+│   │   ├── mlops/serving.yaml     # BentoML model server, profile mlops (6.15)
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── agent/rag.yaml        # RAG: mcp-rag search server + rag-index CronJob (6.12)
 │   │   ├── ui/open-webui.yaml
@@ -194,6 +194,7 @@ local-ai-platform/
 ├── mcp-servers/
 │   ├── filesystem/         # read-only list/search/read over one folder (6.10)
 │   ├── rag/                # LlamaIndex indexer + search_documents over Qdrant (6.12)
+│   ├── triage/             # classify_message over the BentoML service (6.15)
 │   ├── web-search/
 │   ├── fetch/
 │   ├── memory/
@@ -204,13 +205,14 @@ local-ai-platform/
 │   ├── dagster.yaml        # instance: Postgres storage, run queue, logs in S3
 │   ├── workspace.yaml
 │   └── triage/             # data.py (download, split), train.py (Optuna + MLflow), definitions.py
-├── serving/
+├── serving/                # BentoML service for the triage model (6.15)
 │   └── service.py
 ├── n8n/workflows/
 ├── ui/                     # Streamlit agent UI
 ├── data/
 ├── tests/                  # pytest, no cluster or LLM needed (make test)
 ├── docs/
+│   ├── notes/              # one note per build week: what runs, decisions, measurements
 │   └── screenshots/        # UI screenshots (README 10.4)
 └── docker-compose.yml      # optional: run the agent stack without k3s for fast local dev
 ```
@@ -603,6 +605,36 @@ browser ─https─► Traefik (cert *.ai.local from the local CA)
 
 **Gotchas fixed during setup:** Kubernetes injects `AUTHELIA_PORT=tcp://...` for a Service named `authelia`, which Authelia reads as config and refuses to start (`enableServiceLinks: false`). Authelia rewrites `/app/.healthcheck.env` on start, so its root filesystem can't be read-only. Traefik on the host network used WSL's DNS and couldn't resolve `authelia.auth.svc.cluster.local` (`dnsPolicy: ClusterFirstWithHostNet`).
 
+### 6.15 Model serving as an agent tool (BentoML + Evidently)
+
+The Week 4 model in daily use: the agent can check whether a message is spam, and a daily report says whether the messages it sees still look like the ones it was trained on. Serving is in the `mlops` profile; the agent's tool is in the core and says so when `mlops` is off.
+
+```text
+agent ─MCP─► mcp-triage: classify_message(text) ─► BentoML "triage" (mlops) ─► models:/message-triage@champion
+                                                     │  re-checks the alias every 5 min
+                                                     └─ every request ─► s3://triage/requests/<date>/*.jsonl
+Dagster triage_drift_report (03:00) ─► Evidently: requests of the last 7 days vs the test set ─► MLflow (HTML)
+```
+
+| Piece | Code | Manifest |
+|---|---|---|
+| BentoML service: `POST /classify`, `POST /model`; Swagger UI at https://triage.ai.local | [`serving/service.py`](serving/service.py) | [`mlops/serving.yaml`](infra/k3s/mlops/serving.yaml) |
+| MCP tool `classify_message` | [`mcp-servers/triage/`](mcp-servers/triage/triage_server.py) | `mcp-triage` in [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
+| Drift report (asset `triage_drift_report`, job `triage_monitoring`, schedule 03:00) | [`triage/drift.py`](pipelines/triage/drift.py), [`definitions.py`](pipelines/triage/definitions.py) | — |
+
+**Ask the agent:** "Is this message spam? '…'" or "Is this a scam: '…'". These questions skip document retrieval and go straight to the tool (the `TOOL_INTENT` pattern in [`graph.py`](agent/graph.py)). Measured: 11 s warm, 34 s for the first call after a restart; the model itself answers in ~1.3 s.
+
+**Drift report:** text can't be compared directly, so both sides become descriptors (length, words, digit/capital ratio, `!`, links, money signs) plus the model's own spam probability and label. Evidently's data-drift preset compares them (Wasserstein / Jensen-Shannon, threshold 0.1). A run needs ≥ 30 logged requests in the window, otherwise it records "skipped". The check `drift_share_at_most_0_5` warns when more than half the columns drift. Each report is an HTML artifact in MLflow, experiment `message-triage-monitoring`. Run it now: Dagster → *Jobs* → `triage_monitoring` → *Materialize*.
+
+| Traffic (2026-10-07) | Requests | Drift share | Spam rate | Check |
+|---|---|---|---|---|
+| Messages like the training data | 84 | 0.33 (3 of 9, sampling noise) | 13% | passed |
+| + modern phishing with links | 144 | **0.89** (8 of 9; links, digits, model output) | 40% | **warning** |
+
+The report also showed why it matters: the model caught 47 of 60 modern phishing messages (78%), well below its 95% test recall, because the 2012 SMS data has few links. That's the cue to add newer examples and retrain.
+
+**Privacy:** logged requests contain the message text; they stay in SeaweedFS on this machine (bucket `triage`). Set `REQUEST_LOG_BUCKET` to `""` in `serving.yaml` to stop logging (the drift report then always skips).
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -642,7 +674,7 @@ Deploys to laptop k3s
 | SeaweedFS (replaces MinIO) | 512 MB (measured 184 MB) |
 | MLflow | 512 MB (measured 400 MB, job runner off) |
 | Dagster | 1 GB (measured: webserver 590 MB, daemon 390 MB idle / 1.3 GB while training) |
-| BentoML | 512 MB |
+| BentoML (triage model, profile mlops) | 512 MB (measured ~300 MB) |
 | LangGraph + MCP servers | 1.5 GB |
 | Open WebUI + Agent UI | 768 MB |
 | Headlamp | 64 MB (limit 256 MB) |
@@ -810,7 +842,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 2 | LangGraph + filesystem MCP | File agent ✅ |
 | 3 | RAG (LlamaIndex + Qdrant) | Doc Q&A ✅ |
 | 4 | MLflow + Dagster + training | Model trained ✅ |
-| 5 | BentoML + agent integration | Model exposed as agent tool |
+| 5 | BentoML + agent integration | Model exposed as agent tool ✅ |
 | 6 | n8n + Langfuse + Grafana | Automation + traces |
 | 7 | ArgoCD + GitHub Actions | GitOps CI/CD |
 | 8 | Voice + OCR + docs + demo | Full platform |
@@ -819,7 +851,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 - Manifests committed under `infra/k3s/`
 - Service reachable at its `*.ai.local` URL
 - Tests in `tests/` pass in CI
-- Short notes added under `docs/`
+- Short notes added under [`docs/notes/`](docs/notes/README.md)
 
 ---
 

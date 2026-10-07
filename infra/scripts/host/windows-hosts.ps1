@@ -11,7 +11,7 @@ $end = '# END local-ai-platform'
 # One name per line: Windows treats extra names on a line as aliases (CNAMEs) of the first,
 # and those don't resolve for ::1 (only the first name on each line would work).
 # Every UI lives under ai.local, so one sign-on cookie (domain ai.local) covers them all (§6.14)
-$names = 'auth', 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'langfuse', 'grafana', 's3', 'qdrant', 'argocd', 'headlamp'
+$names = 'auth', 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'phoenix', 'grafana', 'triage', 's3', 'qdrant', 'argocd', 'headlamp'
 $block = @($begin) + ($names | ForEach-Object { "::1 $_.ai.local" }) + @($end)
 
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(

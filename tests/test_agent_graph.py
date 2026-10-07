@@ -125,3 +125,10 @@ def test_sources_line_added_only_when_answer_lacks_citations():
     assert sources(ctx, "The answer.") == "\n\nSources: notes/a.md:1-4, docs/b.md:9-12"
     assert sources(ctx, "The answer (notes/a.md:1-4).") == ""
     assert sources("", "Paris.") == ""
+
+
+def test_spam_questions_go_to_the_tools_not_the_documents():
+    calls = []
+    run([searcher(PASSAGE, calls), list_dir], [AIMessage("SPAM")], "Is this spam: 'You won a prize, call now'?")
+    run([searcher(PASSAGE, calls), list_dir], [AIMessage("ok")], "Classify this message: hi mum")
+    assert calls == []

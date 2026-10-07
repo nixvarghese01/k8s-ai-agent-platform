@@ -16,7 +16,7 @@ secrets/
 *-secret.yaml
 !*-secret.example.yaml
 
-# --- Data, models, artifacts (live in k3s volumes / MinIO, not Git) ---
+# --- Data, models, artifacts (live in k3s volumes / SeaweedFS, not Git) ---
 data/*
 !data/.gitkeep
 *.gguf

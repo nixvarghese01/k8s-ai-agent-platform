@@ -17,8 +17,9 @@ Shaped around what a 3B model on CPU does reliably (qwen2.5:3b, measured 2026-10
   goes to `agent` without them.
 - `agent` has the file tools (list_dir, read_file, search_files) for everything else. The search
   tool isn't offered to it; it only made redundant calls.
-- "Which files..." questions skip retrieval: passages that mention files and folders made the
-  model describe the README instead of listing the folder.
+- Questions that need a tool skip retrieval (TOOL_INTENT): "which files..." (passages that
+  mention files made the model describe the README instead of listing the folder) and "is this
+  spam..." (classify_message, Week 5).
 """
 
 import json
@@ -49,8 +50,11 @@ RETRIEVE_TOOL = os.environ.get("RETRIEVE_TOOL", "search_documents")
 # Passages start with "[1] <file>:<lines>"; anything else ("No matching passages...") isn't context
 PASSAGES_PREFIX = "[1] "
 NO_ANSWER = "NO_ANSWER"
-LIST_INTENT = re.compile(
-    r"\b(which|what) (files|documents|notes|folders)\b|\blist\b.*\b(files|documents|notes|folders?)\b",
+# Questions that need a tool, not the documents: which files exist (list_dir), and whether a
+# message is spam (classify_message). Passages would only get in the way.
+TOOL_INTENT = re.compile(
+    r"\b(which|what) (files|documents|notes|folders)\b|\blist\b.*\b(files|documents|notes|folders?)\b"
+    r"|\b(spam|scam|phishing|junk)\b|\bclassify\b",
     re.IGNORECASE,
 )
 
@@ -108,7 +112,7 @@ def build_graph(tools, model=None):
 
     async def retrieve(state: State):
         question = text(next(m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)).content)
-        if search is None or LIST_INTENT.search(question):
+        if search is None or TOOL_INTENT.search(question):
             return {"context": ""}
         try:
             found = text(await search.ainvoke({"query": question}))

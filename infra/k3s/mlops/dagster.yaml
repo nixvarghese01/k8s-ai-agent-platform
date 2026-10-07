@@ -12,7 +12,8 @@ data:
   MLFLOW_UI_URL: https://mlflow.ai.local # links in Dagster's run metadata open in your browser
   S3_ENDPOINT_URL: http://seaweedfs.storage.svc.cluster.local:8333
   AWS_REGION: us-east-1 # SeaweedFS ignores it; boto3 wants one
-  SCHEDULE_TIMEZONE: Asia/Dubai # nightly training at 02:00 local time
+  SCHEDULE_TIMEZONE: Asia/Dubai # nightly training at 02:00, drift report at 03:00 local time
+  TRIAGE_BUCKET: triage # requests logged by the model server (mlops/serving.yaml)
 ---
 apiVersion: apps/v1
 kind: Deployment

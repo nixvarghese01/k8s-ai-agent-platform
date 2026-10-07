@@ -1,4 +1,6 @@
 -r ../agent/requirements.txt
 -r ../mcp-servers/rag/requirements.txt
+-r ../mcp-servers/triage/requirements.txt
 -r ../pipelines/requirements.txt
+-r ../serving/requirements.txt
 pytest==9.1.1
