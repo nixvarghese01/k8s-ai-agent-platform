@@ -64,6 +64,8 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | Tuning | Optuna | Hyperparameter optimisation |
 | Drift | Evidently | Data / model drift reports |
 | UI | Open WebUI + custom Streamlit | Chat UI and agent UI |
+| Voice | faster-whisper + Piper | Speech-to-text and text-to-speech for Open WebUI ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) |
+| OCR | Tesseract | Scanned PDFs and images into the document index |
 | Cluster UI | Headlamp | Web dashboard for pods, logs, events and resource usage |
 | Automation | n8n | Scheduled and event-driven workflows |
 | LLM Observability | Phoenix (Arize, OpenTelemetry) | Traces of every agent run and LLM call: steps, prompts, latency ([6.16](#616-observability-phoenix-prometheus-grafana)); chosen over Langfuse v3 for the RAM budget |
@@ -151,6 +153,7 @@ local-ai-platform/
 │   │   ├── mlops/serving.yaml     # BentoML model server, profile mlops (6.15)
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── agent/rag.yaml        # RAG: mcp-rag search server + rag-index CronJob (6.12)
+│   │   ├── voice/voice.yaml      # voice server, profile voice (6.18)
 │   │   ├── ui/open-webui.yaml
 │   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.ai.local)
 │   │   ├── ui/headlamp.yaml      # Kubernetes dashboard (headlamp.ai.local)
@@ -211,6 +214,8 @@ local-ai-platform/
 │   ├── workspace.yaml
 │   └── triage/             # data.py (download, split), train.py (Optuna + MLflow), definitions.py
 ├── serving/                # BentoML service for the triage model (6.15)
+├── voice/                  # Whisper + Piper, OpenAI-compatible audio API (6.18)
+├── images/ml-base/         # shared base for the ML images (7)
 │   └── service.py
 ├── ui/                     # Streamlit agent UI
 ├── data/
@@ -671,6 +676,22 @@ Try it from a pod: `curl -X POST http://n8n.automation.svc.cluster.local:5678/we
 
 **Gotchas fixed on the way:** like Authelia, n8n reads the `N8N_PORT=tcp://...` variable Kubernetes injects for a Service named `n8n` (`enableServiceLinks: false`); n8n 2.x activates workflows on import only in queue mode, so the init container imports them and then runs `n8n publish:workflow` for each active one.
 
+### 6.18 Voice and OCR (Whisper, Piper, Tesseract)
+
+**Voice** (workflow 8), profile `voice` (~0.7 GB): a small OpenAI-compatible server ([`voice/voice_server.py`](voice/voice_server.py), [`voice/voice.yaml`](infra/k3s/voice/voice.yaml)) with **faster-whisper** `base` (int8) for speech-to-text and **Piper** `en_US-amy-medium` for text-to-speech. Open WebUI is wired to it from its manifest, so in https://chat.ai.local the **microphone** button dictates and the **speaker** button reads an answer aloud; the headset button starts a hands-free call. Models download into the volume on first use (~200 MB).
+
+| Step (warm, in k3s, 2 CPUs) | Time |
+|---|---|
+| Speech-to-text, a short question | 3.3–3.6 s |
+| Text-to-speech, one sentence | 0.6 s |
+| Spoken question → spoken document answer | ~11 s (target 3–6 s: partly met) |
+
+`WHISPER_MODEL` in `voice.yaml`: `tiny` is faster, `small` more accurate ("You won" once came back as "You want" with `base`). PyAV is pinned to 18.1.0: faster-whisper 1.2.1 passes an argument PyAV 19 removed. The platform has its own server rather than *speaches* (the usual bundle), which hasn't had a stable release since 2025.
+
+**OCR** (workflow 9): the document index ([`rag_index.py`](mcp-servers/rag/rag_index.py)) now reads **PDFs** (text layer; pages without one are rendered and read with **Tesseract**), **images** (`.png`, `.jpg`, `.tif`, ...) and **Word** files (paragraphs and tables). PDF passages are cited by page: `Sources: docs/scans/rent-receipt.pdf p.1`. Drop a scan into `E:\ai-files` and ask about it after the next index run (or `make rag-index`). Measured: a photo of a notice and an image-only PDF receipt were indexed in ~5 s each, and questions about them were answered correctly from the OCR text (6.5–24 s). Languages: `OCR_LANG` (default `eng`; add packs to the image for more).
+
+**Limits:** a file that yields no text (a photo without words) is re-read on every index run, which costs CPU if you have many. Handwriting OCRs poorly; PaddleOCR would do better at ~1 GB more RAM.
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -720,6 +741,7 @@ ArgoCD (in k3s, profile gitops) ◄────┘ polls development every ~3 mi
 | LangGraph + MCP servers | 1.5 GB |
 | Open WebUI + Agent UI | 768 MB |
 | Headlamp | 64 MB (limit 256 MB) |
+| Voice (profile voice) | 256 MB (measured ~700 MB with both models loaded) |
 | Authelia (single sign-on) | 32 MB (limit 256 MB) |
 | n8n (profile automation) | 512 MB (measured ~380 MB) |
 | Phoenix (profile observability) | 512 MB (measured ~500 MB) |
@@ -737,18 +759,18 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 
 ## 9. Workflows (Functional Requirements)
 
-| # | Workflow | Target latency | Main components |
-|---|---|---|---|
-| 1 | Chat + memory | 2–3 s | Ollama, memory MCP, Open WebUI |
-| 2 | File search | 2–4 s | filesystem MCP |
-| 3 | RAG Q&A | 3–5 s (measured 3–11 s, median ~7 s) | LlamaIndex, Qdrant, nomic-embed-text, mcp-rag |
-| 4 | Email triage | 30–60 s | n8n, LLM classification |
-| 5 | Calendar | 2–4 s | time MCP, n8n |
-| 6 | Web research | 15–30 s | web-search + fetch MCP |
-| 7 | Multi-step agent | 15–30 s | LangGraph planning + multiple tools |
-| 8 | Voice assistant | 3–6 s | Speech-to-text + TTS + agent |
-| 9 | OCR pipeline | 4–8 s | OCR engine + SeaweedFS + RAG index |
-| 10 | Daily briefing | 30–60 s | n8n schedule + web + calendar + LLM summary |
+| # | Workflow | Target | Status (measured on CPU, 2026-10) | Main components |
+|---|---|---|---|---|
+| 1 | Chat + memory | 2–3 s | ◐ chat works (Open WebUI, ~2–8 s); no memory MCP yet | Ollama, LiteLLM, Open WebUI |
+| 2 | File search | 2–4 s | ✅ 10–27 s: each tool call is a model round trip ([6.10](#610-file-agent-langgraph--filesystem-mcp)) | filesystem MCP, agent |
+| 3 | RAG Q&A | 3–5 s | ✅ 3–11 s, median ~7 s, with sources ([6.12](#612-document-qa-rag-llamaindex--qdrant)) | LlamaIndex, Qdrant, nomic-embed-text |
+| 4 | Email triage | 30–60 s | ✅ spam 1.2 s, normal mail 15 s; webhook in, IMAP needs your mailbox ([6.17](#617-automation-n8n)) | n8n, BentoML classifier, LLM |
+| 5 | Calendar | 2–4 s | ✗ not built: needs a calendar/time MCP server and your calendar's credentials | — |
+| 6 | Web research | 15–30 s | ✗ not built: needs web-search + fetch MCP servers | — |
+| 7 | Multi-step agent | 15–30 s | ◐ the agent chains tools (list → read, classify) but has no planning step | LangGraph |
+| 8 | Voice assistant | 3–6 s | ✅ ~11 s spoken question → spoken answer: speech-to-text 3.4 s, agent ~7 s, text-to-speech 0.6 s ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) | faster-whisper, Piper, Open WebUI |
+| 9 | OCR pipeline | 4–8 s | ✅ scanned PDF / image → indexed in ~5 s each; answers cite `file.pdf p.N` ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) | Tesseract, RAG index |
+| 10 | Daily briefing | 30–60 s | ✅ 29 s, to-dos into `briefings/<date>.md`; no web or calendar part yet | n8n, agent |
 
 Latencies are targets for CPU-only 3B models; Phoenix records the real ones per agent run and LLM call (§6.16).
 
@@ -803,6 +825,7 @@ Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a 
 | Phoenix | https://phoenix.ai.local | `http://phoenix.observability.svc.cluster.local:6006` | UI, `/v1/traces` (OTLP HTTP), `/v1/projects` (REST) |
 | Prometheus | not exposed, see 10.3 | `http://prometheus.observability.svc.cluster.local:9090` | `/api/v1/query`, `/targets` |
 | Grafana | https://grafana.ai.local | `http://grafana.observability.svc.cluster.local:3000` | `/d/platform-overview` |
+| Voice | used by Open WebUI | `http://voice.voice.svc.cluster.local:8000` | `POST /v1/audio/transcriptions`, `POST /v1/audio/speech`, `/health` |
 | ArgoCD | https://argocd.ai.local | `http://argocd-server.argocd.svc.cluster.local` | UI, `/api/v1/applications` |
 | n8n | https://n8n.ai.local | `http://n8n.automation.svc.cluster.local:5678` | `/webhook/email-triage` (POST), `/webhook/daily-briefing` (GET) |
 
@@ -901,7 +924,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 5 | BentoML + agent integration | Model exposed as agent tool ✅ |
 | 6 | n8n + Phoenix + Prometheus/Grafana | Automation + traces ✅ |
 | 7 | ArgoCD + GitHub Actions | GitOps CI/CD ✅ |
-| 8 | Voice + OCR + docs + demo | Full platform |
+| 8 | Voice + OCR + docs + demo | Full platform ✅ (demo script: [docs/DEMO.md](docs/DEMO.md)) |
 
 ### Definition of done per week
 - Manifests committed under `infra/k3s/`
@@ -936,7 +959,8 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Tracing footprint | **Decided:** Phoenix (~0.5 GB, one container + SQLite) instead of Langfuse v3 (~1.5–2 GB: web, worker, ClickHouse, Redis). Phoenix has no prompt management or annotation queues like Langfuse; traces, latency and token counts are covered. |
 | ArgoCD memory | 1.3 GB is significant; consider disabling Dex/notifications or using ArgoCD core mode. |
 | GHCR 500 MB limit | **Resolved:** images are public (the repo is), so no storage limit and no pull secret; `cleanup.yml` keeps 10 versions each. |
-| Voice/OCR tooling | Not yet specified — candidates: faster-whisper (STT), Piper (TTS), Tesseract / PaddleOCR (OCR). |
+| Voice/OCR tooling | **Decided:** faster-whisper `base` + Piper (own OpenAI-compatible server, profile `voice`), Tesseract for scanned PDFs and images ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)). |
+| Workflows not built | Calendar (5) and web research (6) need MCP servers (time/calendar, web-search, fetch) and, for the calendar, your account's credentials; chat memory (1) needs a memory MCP. Tracked as follow-up work. |
 | Email/Calendar access | Requires OAuth credentials for the chosen provider; store as Kubernetes Secrets. |
 | 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
@@ -956,14 +980,14 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 ## 16. Deliverables
 
 - Local AI agent platform running on k3s
-- 10 working end-to-end workflows
+- End-to-end workflows: 6 working (2, 3, 4, 8, 9, 10), 2 partly (1, 7), 2 not built (5, 6); see §9
 - MCP-based tool system
 - RAG + classical ML
 - Full MLOps (MLflow, Dagster, BentoML, Optuna, Evidently)
 - LLMOps / AIOps (Phoenix, Prometheus, Grafana, n8n)
 - k3s + ArgoCD GitOps
 - GitHub Actions CI/CD to GHCR
-- Portfolio-ready repo with docs and demo
+- Portfolio-ready repo with docs ([weekly notes](docs/notes/README.md)) and a demo script ([docs/DEMO.md](docs/DEMO.md))
 - Hands-on skills: agents, MCP, Kubernetes, LLMOps
 
 ---
