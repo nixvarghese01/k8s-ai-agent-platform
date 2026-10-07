@@ -125,8 +125,11 @@ try {
                 Send-Cdp 'Input.insertText' @{ text = $f[1] } | Out-Null
             }
             Send-Cdp 'Runtime.evaluate' @{ expression = "document.getElementById('sign-in-button').click()" } | Out-Null
-            if (-not (Wait-Js "!document.querySelector('#password-textfield') && /log ?out/i.test(document.body.innerText)" 20)) {
-                throw 'sign-in failed: wrong username/password, or locked out after 5 tries (wait 10 min)'
+            # Signed in: Authelia either shows its "authenticated" view or moves on to its default
+            # page (chat.ai.local)
+            if (-not (Wait-Js "location.host !== 'auth.ai.local' || !!document.getElementById('authenticated-view')" 20)) {
+                $seen = (Send-Cdp 'Runtime.evaluate' @{ returnByValue = $true; expression = "location.href + ' | user field: ' + (document.getElementById('username-textfield')||{}).tagName + '/' + ((document.getElementById('username-textfield')||{}).value||'').length + ' chars, password: ' + ((document.getElementById('password-textfield')||{}).value||'').length + ' chars | ' + document.body.innerText.slice(0, 200)" }).result.value
+                throw "sign-in failed (wrong username/password, or locked out after 5 tries: wait 10 min). Page: $seen"
             }
             "signed in as $user"
         }

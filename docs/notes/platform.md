@@ -23,4 +23,10 @@ logs no `Unhealthy` noise.
   `observability`, `automation` and `voice` run only when switched on
   (`.\local-up -Profile mlops`, `.\infra\scripts\platform.ps1 profile mlops`). Off = scaled to 0.
 - Measured: core only 3.4 GB in WSL (pods 1.8 GB); core + mlops 4.9 GB; switching mlops on ~40 s.
-- Tracing uses Phoenix (~0.3 GB) instead of Langfuse v3 (~1.5–2 GB) for the same reason.
+- Tracing uses Phoenix (~0.5 GB) instead of Langfuse v3 (~1.5–2 GB) for the same reason.
+- All profiles on (2026-10-07): 6.9 GB used in WSL, 11.1 GB available.
+
+## Reaching the UIs on any network
+Hosts entries point at `127.0.0.1`; Windows port proxies forward 80/443 to `[::1]`, where WSL
+relays Traefik. Pointing them at `::1` directly broke every page in Chrome on networks without
+IPv6 (Chrome then skips IPv6-only names).

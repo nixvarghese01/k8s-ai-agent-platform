@@ -4,7 +4,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 
 | | |
 |---|---|
-| **Core stack** | Ollama (3B models) · LiteLLM · LangGraph · MCP · Qdrant · MLflow · Dagster · BentoML · n8n · Langfuse · ArgoCD |
+| **Core stack** | Ollama (3B models) · LiteLLM · LangGraph · MCP · Qdrant · MLflow · Dagster · BentoML · n8n · Phoenix · Prometheus/Grafana · ArgoCD |
 | **Hardware** | Windows 11 laptop, 8+ CPU threads, 32 GB RAM, ~100 GB free SSD (reference build: Intel Core i7-9850H, 6 cores / 12 threads) |
 | **Cost** | $0 (all open source + GitHub free tier) |
 | **GPU** | Not required: everything runs on the CPU (small laptop GPUs with 2–4 GB VRAM don't help 3B models) |
@@ -56,7 +56,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | Agent | LangGraph | Stateful agent graph / orchestration |
 | Protocol | MCP | Standard tool interface between agent and tools |
 | Vector DB | Qdrant | Embedding storage and similarity search |
-| Database | Postgres / SQLite | App state, metadata, backends for MLflow/n8n/Langfuse |
+| Database | Postgres / SQLite | Metadata for MLflow and Dagster (Postgres); n8n, Phoenix, Authelia, Grafana on SQLite |
 | Object Storage | SeaweedFS | S3-compatible artifact and document storage (MinIO went source-only in late 2025, [6.13](#613-training-pipeline-mlflow--dagster--optuna)) |
 | ML Tracking | MLflow | Experiments, metrics, model registry |
 | Pipelines | Dagster | Training, tuning, and RAG indexing pipelines |
@@ -66,7 +66,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | UI | Open WebUI + custom Streamlit | Chat UI and agent UI |
 | Cluster UI | Headlamp | Web dashboard for pods, logs, events and resource usage |
 | Automation | n8n | Scheduled and event-driven workflows |
-| LLM Observability | Langfuse | Prompt/response traces, latency, cost |
+| LLM Observability | Phoenix (Arize, OpenTelemetry) | Traces of every agent run and LLM call: steps, prompts, latency ([6.16](#616-observability-phoenix-prometheus-grafana)); chosen over Langfuse v3 for the RAM budget |
 | Metrics | Prometheus + Grafana | Cluster and service metrics |
 | GitOps | ArgoCD | Sync manifests from GitHub to k3s |
 | CI/CD | GitHub Actions + GHCR | Test, build, and publish container images |
@@ -100,7 +100,7 @@ Windows 11 (32 GB) ── browser ──► https://*.ai.local (hosts file → 1
                      ├── agent:         LangGraph + MCP servers
                      ├── ui:            Open WebUI + Streamlit
                      ├── automation:    n8n
-                     ├── observability: Langfuse, Grafana, Prometheus
+                     ├── observability: Phoenix, Prometheus, Grafana
                      └── argocd
 ```
 
@@ -117,7 +117,7 @@ User ──► Open WebUI / Streamlit ──► Traefik ──► LangGraph agen
           Ollama (LLM + embeddings)     filesystem / web / memory / sqlite / time
           Qdrant (RAG retrieval)
 
-All LLM calls (via LiteLLM) ──► Langfuse (traces)     All pods ──► Prometheus ──► Grafana
+Agent runs + all LLM calls (via LiteLLM) ──► Phoenix (traces)     Traefik, containers, BentoML ──► Prometheus ──► Grafana
 ```
 
 ---
@@ -154,7 +154,10 @@ local-ai-platform/
 │   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.ai.local)
 │   │   ├── ui/headlamp.yaml      # Kubernetes dashboard (headlamp.ai.local)
 │   │   ├── automation/n8n.yaml
-│   │   ├── observability/langfuse.yaml
+│   │   ├── automation/n8n-workflows.yaml # email triage + daily briefing, imported on start (6.17)
+│   │   ├── observability/phoenix.yaml    # LLM tracing (6.16)
+│   │   ├── observability/prometheus.yaml # metrics: Traefik, containers, BentoML
+│   │   ├── observability/grafana.yaml    # Platform overview dashboard, sign-on via Authelia
 │   │   ├── auth/authelia.yaml    # single sign-on for every *.ai.local UI (6.14)
 │   │   ├── ingress/ingresses.yaml # *.ai.local, HTTPS, behind auth/authelia
 │   │   ├── ingress/tls.yaml       # Traefik's default certificate (*.ai.local)
@@ -207,7 +210,6 @@ local-ai-platform/
 │   └── triage/             # data.py (download, split), train.py (Optuna + MLflow), definitions.py
 ├── serving/                # BentoML service for the triage model (6.15)
 │   └── service.py
-├── n8n/workflows/
 ├── ui/                     # Streamlit agent UI
 ├── data/
 ├── tests/                  # pytest, no cluster or LLM needed (make test)
@@ -402,7 +404,8 @@ Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin Power
 127.0.0.1 mlflow.ai.local
 127.0.0.1 dagster.ai.local
 127.0.0.1 n8n.ai.local
-127.0.0.1 langfuse.ai.local
+127.0.0.1 phoenix.ai.local
+127.0.0.1 triage.ai.local
 127.0.0.1 grafana.ai.local
 127.0.0.1 s3.ai.local
 127.0.0.1 qdrant.ai.local
@@ -458,7 +461,7 @@ curl -s https://llm.ai.local/v1/chat/completions -H 'Content-Type: application/j
 - **Hosted models** (`chat-cloud`). Put the API key in a `litellm-keys` Secret, not in Git. This is off by default: enabling it sends prompts off the machine (see [Non-Functional Requirements](#11-non-functional-requirements)).
 - **vLLM** isn't used. It needs a supported GPU, which this laptop doesn't have; on CPU it's slower than Ollama and serves one model per process. If a GPU box becomes available, its OpenAI endpoint is one more entry (`model: hosted_vllm/<model>`, `api_base: http://<host>:8000/v1`).
 
-When Langfuse arrives (Week 6), add `success_callback: ["langfuse"]` under `litellm_settings` and every LLM call is traced from this one place.
+Every LLM call through LiteLLM is traced to Phoenix (`callbacks: ["arize_phoenix"]` under `litellm_settings`, §6.16).
 
 ### 6.10 File agent (LangGraph + filesystem MCP)
 
@@ -635,6 +638,36 @@ The report also showed why it matters: the model caught 47 of 60 modern phishing
 
 **Privacy:** logged requests contain the message text; they stay in SeaweedFS on this machine (bucket `triage`). Set `REQUEST_LOG_BUCKET` to `""` in `serving.yaml` to stop logging (the drift report then always skips).
 
+### 6.16 Observability (Phoenix, Prometheus, Grafana)
+
+Profile `observability` (~0.8 GB). Turn it on when you want to see what happened: `.\infra\scripts\platform.ps1 profile mlops,observability`.
+
+| UI | What you see | Source |
+|---|---|---|
+| https://phoenix.ai.local | One trace per agent question (LangGraph → retrieve → search → answer → model call, with prompts, outputs and timings), and one per LLM call through LiteLLM (Open WebUI chats, n8n) | agent: OpenInference instrumentation ([`agent/main.py`](agent/main.py)); LiteLLM: `callbacks: ["arize_phoenix"]` ([`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml)) |
+| https://grafana.ai.local | *Platform overview*: memory and CPU by namespace, top pods, requests/s and p95 latency per UI, message-classifier traffic | Prometheus ([`observability/prometheus.yaml`](infra/k3s/observability/prometheus.yaml)) |
+
+**Prometheus is deliberately small:** three scrape jobs (Traefik's metrics, container CPU/memory from the kubelet, pods annotated `prometheus.io/scrape` such as BentoML), only the series the dashboard uses, 7 days of retention; 36 MB instead of the kube-prometheus stack's ~1 GB. **Grafana** signs you in from the platform login (Authelia's `Remote-User` header), no second password. The dashboard is provisioned from [`grafana.yaml`](infra/k3s/observability/grafana.yaml); dashboards you build in the UI are kept on its volume.
+
+**Phoenix instead of Langfuse:** Langfuse v3 needs a web app, a worker, ClickHouse and Redis (~1.5–2 GB); Phoenix is one container with SQLite (~0.5 GB) and speaks OpenTelemetry natively. With the profile off, the agent and LiteLLM simply fail to export (silenced) and keep working.
+
+**Gotcha fixed on the way:** FastAPI now emits OpenTelemetry spans itself whenever a *global* tracer exists, so the agent's 10-second health probes buried the real runs. The agent registers Phoenix's tracer privately and hands it only to the LangChain/LangGraph instrumentation.
+
+### 6.17 Automation (n8n)
+
+Profile `automation` (~0.4 GB). https://n8n.ai.local asks for its own owner account on the first visit (a second layer behind the platform login). Two workflows ship with the platform, from [`automation/n8n-workflows.yaml`](infra/k3s/automation/n8n-workflows.yaml); n8n imports and activates them on every start, so edits made in the UI are replaced (export and paste them into that file to keep them).
+
+| Workflow | Trigger | Does | Measured |
+|---|---|---|---|
+| **Email triage** (workflow 4) | `POST /webhook/email-triage` with `{from, subject, body}` | Classifier (BentoML) → spam: "move to Junk, don't open links"; otherwise the LLM picks a category (work, personal, billing, newsletter, other), writes a one-line summary and says whether it needs a reply | spam 1.2 s; normal mail 15 s (target 30–60 s ✅) |
+| **Daily briefing** (workflow 10) | 07:30 every day, or `GET /webhook/daily-briefing` | Asks the agent for today's to-dos, writes `E:\ai-files\briefings\<date>.md`, which the document search then indexes | 29 s |
+
+Try it from a pod: `curl -X POST http://n8n.automation.svc.cluster.local:5678/webhook/email-triage -H 'Content-Type: application/json' -d '{"from":"x@y.com","subject":"Invoice","body":"..."}'`.
+
+**Real e-mail:** replace the *Email in* webhook with n8n's *Email Trigger (IMAP)* node and add your mailbox's credentials in the n8n UI (stored encrypted with the key in Secret `automation/n8n-secret`); the rest of the workflow stays. Calendar and web research (workflows 5, 6) need MCP servers that aren't built yet.
+
+**Gotchas fixed on the way:** like Authelia, n8n reads the `N8N_PORT=tcp://...` variable Kubernetes injects for a Service named `n8n` (`enableServiceLinks: false`); n8n 2.x activates workflows on import only in queue mode, so the init container imports them and then runs `n8n publish:workflow` for each active one.
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -679,9 +712,9 @@ Deploys to laptop k3s
 | Open WebUI + Agent UI | 768 MB |
 | Headlamp | 64 MB (limit 256 MB) |
 | Authelia (single sign-on) | 32 MB (limit 256 MB) |
-| n8n | 512 MB |
-| Langfuse | 512 MB |
-| Prometheus + Grafana | 768 MB |
+| n8n (profile automation) | 512 MB (measured ~380 MB) |
+| Phoenix (profile observability) | 512 MB (measured ~500 MB) |
+| Prometheus + Grafana (profile observability) | 768 MB (measured ~320 MB) |
 | ArgoCD | 1.3 GB |
 | **Total (core, steady state)** | **~13.7 GB** |
 | **Peak (during training)** | **up to WSL cap of 18 GB** |
@@ -689,7 +722,7 @@ Deploys to laptop k3s
 
 Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload must set Kubernetes `requests` and `limits`. Ollama sits outside k3s, so its 4 GB counts against the WSL cap but not against pod limits.
 
-> **Why 18 GB, not 24 GB:** on the dev machine Windows uses ~8–15 GB with normal apps open, so a 24 GB WSL cap would overcommit the 32 GB machine and cause paging. At 18 GB the headroom is thin (~4.3 GB), so trim the stack where possible (e.g. ArgoCD core mode, Langfuse v2) and close heavy Windows apps before training runs.
+> **Why 18 GB, not 24 GB:** on the dev machine Windows uses ~8–15 GB with normal apps open, so a 24 GB WSL cap would overcommit the 32 GB machine and cause paging. At 18 GB the headroom is thin (~4.3 GB), so only the core runs by default and the rest is switched on by profile (§6.6; all profiles on measured 6.9 GB in WSL, 11 GB free), ArgoCD runs in core mode, and heavy Windows apps are best closed before training runs.
 
 ---
 
@@ -708,7 +741,7 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 | 9 | OCR pipeline | 4–8 s | OCR engine + SeaweedFS + RAG index |
 | 10 | Daily briefing | 30–60 s | n8n schedule + web + calendar + LLM summary |
 
-Latencies are targets for CPU-only 3B models and should be measured and reported via Langfuse.
+Latencies are targets for CPU-only 3B models; Phoenix records the real ones per agent run and LLM call (§6.16).
 
 ---
 
@@ -732,6 +765,10 @@ Work down the list; each step depends only on the ones above it. If a step fails
 | 7 | https://mlflow.ai.local | MLflow: *Models* → `message-triage` with alias `champion` ([6.13](#613-training-pipeline-mlflow--dagster--optuna)) | same → `302` |
 | 8 | https://dagster.ai.local | Dagster: *Catalog* → `triage_model`, *Automation* → `triage_nightly` | same → `302` |
 | 9 | https://s3.ai.local | SeaweedFS admin sign-in (second layer): user `admin`, password from `make s3-credentials` | same → `302` |
+| 10 | https://triage.ai.local | BentoML API docs for the message classifier (`mlops` profile); try `POST /classify` ([6.15](#615-model-serving-as-an-agent-tool-bentoml--evidently)) | same → `302` |
+| 11 | https://phoenix.ai.local | Phoenix projects `agent` and `litellm` with their traces (`observability` profile, [6.16](#616-observability-phoenix-prometheus-grafana)) | same → `302` |
+| 12 | https://grafana.ai.local | Grafana's *Platform overview* dashboard, signed in through the platform login | same → `302` |
+| 13 | https://n8n.ai.local | n8n: create its owner account once (second layer), then *Workflows* shows *Email triage* and *Daily briefing* (`automation` profile, [6.17](#617-automation-n8n)) | same → `302` |
 
 Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a `404` comes from Traefik (no Ingress for that name: a typo, or not deployed yet); a certificate warning means `windows-trust-ca.ps1` hasn't run (`curl.exe` needs `--ssl-no-revoke`: Windows' TLS asks for a revocation check that a private CA can't answer; browsers don't); "can't reach this site" means the hosts entry is missing.
 
@@ -752,6 +789,11 @@ Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a 
 | Dagster | https://dagster.ai.local | `http://dagster-webserver.mlops.svc.cluster.local:3000` | `/` UI, `/server_info`, `/graphql` |
 | SeaweedFS | https://s3.ai.local (admin UI) | `http://seaweedfs.storage.svc.cluster.local:8333` (S3 API), `:23646` (admin UI) | S3: buckets `mlflow`, `dagster`; keys from `make s3-credentials` |
 | Postgres | not exposed, see 10.3 | `postgres.storage.svc.cluster.local:5432` | databases `mlflow`, `dagster` |
+| BentoML (message triage) | https://triage.ai.local | `http://triage.mlops.svc.cluster.local:3000` | `POST /classify`, `POST /model`, `/metrics`, `/readyz` |
+| Phoenix | https://phoenix.ai.local | `http://phoenix.observability.svc.cluster.local:6006` | UI, `/v1/traces` (OTLP HTTP), `/v1/projects` (REST) |
+| Prometheus | not exposed, see 10.3 | `http://prometheus.observability.svc.cluster.local:9090` | `/api/v1/query`, `/targets` |
+| Grafana | https://grafana.ai.local | `http://grafana.observability.svc.cluster.local:3000` | `/d/platform-overview` |
+| n8n | https://n8n.ai.local | `http://n8n.automation.svc.cluster.local:5678` | `/webhook/email-triage` (POST), `/webhook/daily-briefing` (GET) |
 
 LiteLLM has no API key (README §15), so any client on this PC can call it. For example, from PowerShell:
 
@@ -770,6 +812,7 @@ kubectl -n agent port-forward svc/mcp-filesystem 8001:8000   # then http://local
 kubectl -n agent port-forward svc/mcp-rag 8002:8000          # then http://localhost:8002/health
 kubectl -n storage port-forward svc/seaweedfs 8333:8333      # S3 API at http://localhost:8333 (aws cli, boto3)
 kubectl -n storage port-forward svc/postgres 5432:5432       # psql/DBeaver on localhost:5432
+kubectl -n observability port-forward svc/prometheus 9090:9090  # Prometheus UI at http://localhost:9090
 ```
 
 WSL forwards `localhost` ports to Windows, so the browser on Windows reaches them. The agent's `/docs` page lets you call `POST /chat` directly and see the raw `steps`.
@@ -787,8 +830,12 @@ Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scrip
 | ![Headlamp](docs/screenshots/headlamp.png) | ![MLflow](docs/screenshots/mlflow.png) |
 | **Dagster: `triage_model` materialized, check passed, nightly 02:00 GMT+4** | **SeaweedFS admin sign-in (https://s3.ai.local)** |
 | ![Dagster](docs/screenshots/dagster.png) | ![SeaweedFS](docs/screenshots/s3.png) |
-| **Single sign-on: https://auth.ai.local, trusted certificate (6.14)** | |
-| ![Authelia sign-in](docs/screenshots/auth.png) | |
+| **Single sign-on: https://auth.ai.local, trusted certificate (6.14)** | **BentoML message classifier (6.15)** |
+| ![Authelia sign-in](docs/screenshots/auth.png) | ![BentoML](docs/screenshots/triage.png) |
+| **Grafana: Platform overview (memory, CPU, requests per UI)** | **Phoenix: traces for `agent` and `litellm`** |
+| ![Grafana](docs/screenshots/grafana.png) | ![Phoenix](docs/screenshots/phoenix.png) |
+| **n8n: owner account setup (second layer behind sign-on)** | |
+| ![n8n](docs/screenshots/n8n.png) | |
 
 ### 10.5 Planned (not deployed yet)
 
@@ -796,9 +843,6 @@ Their hosts entries already exist; until the service is deployed the URL returns
 
 | Service | URL | Week |
 |---|---|---|
-| n8n | https://n8n.ai.local | 6 |
-| Langfuse | https://langfuse.ai.local | 6 |
-| Grafana | https://grafana.ai.local | 6 |
 | ArgoCD | https://argocd.ai.local | 7 |
 
 ---
@@ -809,7 +853,7 @@ Their hosts entries already exist; until the service is deployed the URL returns
 - **Cost:** $0 — only open-source software and GitHub free tier.
 - **Hardware:** runs CPU-only on 32 GB RAM; no GPU dependency.
 - **Reproducibility:** full platform deployable from the repo (`kubectl apply` or ArgoCD sync).
-- **Observability:** every LLM call traced in Langfuse; every service scraped by Prometheus.
+- **Observability:** every agent run and LLM call traced in Phoenix; Traefik, containers and the model server scraped by Prometheus, shown in Grafana.
 - **Resource safety:** all pods have requests/limits (namespace defaults in `limits.yaml`); Ollama capped at 4 cores and one request at a time.
 - **Extensibility:** new tools added as MCP servers without changing agent core.
 - **Security:** secrets kept out of Git (Kubernetes Secrets / sealed secrets); no inbound ports exposed.
@@ -843,7 +887,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 3 | RAG (LlamaIndex + Qdrant) | Doc Q&A ✅ |
 | 4 | MLflow + Dagster + training | Model trained ✅ |
 | 5 | BentoML + agent integration | Model exposed as agent tool ✅ |
-| 6 | n8n + Langfuse + Grafana | Automation + traces |
+| 6 | n8n + Phoenix + Prometheus/Grafana | Automation + traces ✅ |
 | 7 | ArgoCD + GitHub Actions | GitOps CI/CD |
 | 8 | Voice + OCR + docs + demo | Full platform |
 
@@ -877,7 +921,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Item | Notes |
 |---|---|
 | Ollama placement | **Decided:** WSL host (systemd), reached by pods at `http://ollama.llm.svc.cluster.local:11434`. Trade-off: ArgoCD doesn't manage Ollama; its settings live in [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh). The `10.42.0.1` address in `llm/ollama-host.yaml` assumes k3s's default pod network on a single node. |
-| Langfuse footprint | Langfuse v3 needs Postgres + ClickHouse + Redis + S3 (SeaweedFS can serve); 512 MB is optimistic. Budget ~1.5–2 GB or use Langfuse v2 (Postgres only). |
+| Tracing footprint | **Decided:** Phoenix (~0.5 GB, one container + SQLite) instead of Langfuse v3 (~1.5–2 GB: web, worker, ClickHouse, Redis). Phoenix has no prompt management or annotation queues like Langfuse; traces, latency and token counts are covered. |
 | ArgoCD memory | 1.3 GB is significant; consider disabling Dex/notifications or using ArgoCD core mode. |
 | GHCR 500 MB limit | Applies to private packages; keep images small (slim bases, multi-stage builds) and run `cleanup.yml`. Public images are free. |
 | Voice/OCR tooling | Not yet specified — candidates: faster-whisper (STT), Piper (TTS), Tesseract / PaddleOCR (OCR). |
@@ -905,7 +949,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 - MCP-based tool system
 - RAG + classical ML
 - Full MLOps (MLflow, Dagster, BentoML, Optuna, Evidently)
-- LLMOps / AIOps (Langfuse, Prometheus, Grafana, n8n)
+- LLMOps / AIOps (Phoenix, Prometheus, Grafana, n8n)
 - k3s + ArgoCD GitOps
 - GitHub Actions CI/CD to GHCR
 - Portfolio-ready repo with docs and demo
