@@ -98,7 +98,8 @@ class ChatResponse(BaseModel):
 def sources(context: str, answer: str) -> str:
     """A "Sources:" line for the retrieved passages, unless the answer already cites them.
     A 3B model often drops the citations it is asked for, so they're added here instead."""
-    refs = re.findall(r"^\[\d+\] (\S+:\d+-\d+) \(score", context, re.M)
+    # "notes/a.md:3-9" or "scans/invoice.pdf p.2"
+    refs = re.findall(r"^\[\d+\] (\S+(?::\d+-\d+| p\.\d+)) \(score", context, re.M)
     if not refs or any(r in answer for r in refs):
         return ""
     return "\n\nSources: " + ", ".join(dict.fromkeys(refs))

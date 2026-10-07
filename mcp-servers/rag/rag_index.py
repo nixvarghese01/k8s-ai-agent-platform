@@ -1,5 +1,7 @@
-"""Index the shared folder into Qdrant (LlamaIndex): read text files, split into chunks, embed
-with `embed-default` through LiteLLM, store with their file and line range.
+"""Index the shared folder into Qdrant (LlamaIndex): read text files, PDFs, Word files and images,
+split into chunks, embed with `embed-default` through LiteLLM, store with their file and line
+range (or PDF page). PDF pages without a text layer (scans) and images are read with Tesseract
+OCR (Week 8, README §6.18).
 
 Incremental: every chunk carries its file's sha256, so a run re-embeds only new or changed files
 and drops the chunks of deleted ones. Runs as the k3s CronJob `rag-index` (`make rag-index` for
@@ -29,28 +31,80 @@ ROOT = Path(os.environ.get("FILES_ROOT", "/data")).resolve()
 # Small chunks: a 3B model answers faster and better from 3–4 short passages than from one long one
 CHUNK_TOKENS = int(os.environ.get("CHUNK_TOKENS", "256"))
 CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP", "32"))
-MAX_FILE_BYTES = 1_000_000
+MAX_FILE_BYTES = 1_000_000  # text files
+MAX_DOC_BYTES = 25_000_000  # PDFs, Word files, images
 TEXT_SUFFIXES = {
     ".md", ".txt", ".rst", ".csv", ".tsv", ".json", ".yaml", ".yml", ".toml", ".ini", ".log",
     ".py", ".sh", ".ps1", ".sql", ".html", ".xml",
 }
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".webp"}
+DOC_SUFFIXES = {".pdf", ".docx"} | IMAGE_SUFFIXES
+OCR_LANG = os.environ.get("OCR_LANG", "eng")  # Tesseract languages, e.g. "eng+ara"
+OCR_MIN_CHARS = 30  # a PDF page with less text than this is treated as a scan
 
 
 def scan(root: Path) -> dict[str, tuple[Path, str]]:
-    """Text files under root: relative path -> (path, sha256). Skips big, binary and outside files."""
+    """Indexable files under root: relative path -> (path, sha256). Skips big, unreadable,
+    unsupported and outside files."""
     files = {}
     for f in sorted(root.rglob("*")):
-        if not f.is_file() or f.suffix.lower() not in TEXT_SUFFIXES or not f.resolve().is_relative_to(root):
+        suffix = f.suffix.lower()
+        if not f.is_file() or suffix not in TEXT_SUFFIXES | DOC_SUFFIXES or not f.resolve().is_relative_to(root):
             continue
-        if f.stat().st_size > MAX_FILE_BYTES:
+        if f.stat().st_size > (MAX_FILE_BYTES if suffix in TEXT_SUFFIXES else MAX_DOC_BYTES):
             continue
         data = f.read_bytes()
-        try:
-            data.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
+        if suffix in TEXT_SUFFIXES:
+            try:
+                data.decode("utf-8")
+            except UnicodeDecodeError:
+                continue
         files[f.relative_to(root).as_posix()] = (f, hashlib.sha256(data).hexdigest())
     return files
+
+
+def ocr(image) -> str:
+    """Tesseract OCR of a PIL image; "" (with a warning) when Tesseract isn't installed."""
+    import pytesseract
+
+    try:
+        return pytesseract.image_to_string(image, lang=OCR_LANG)
+    except pytesseract.TesseractNotFoundError:
+        log.warning("Tesseract not installed: skipping OCR")
+        return ""
+
+
+def extract(f: Path) -> list[tuple[int | None, str]]:
+    """(page, text) pieces of one file: one per PDF page, one (page None) for anything else."""
+    suffix = f.suffix.lower()
+    if suffix in TEXT_SUFFIXES:
+        return [(None, f.read_text(encoding="utf-8"))]
+    if suffix == ".docx":
+        import docx
+
+        d = docx.Document(str(f))
+        parts = [p.text for p in d.paragraphs]
+        parts += [" | ".join(c.text for c in row.cells) for t in d.tables for row in t.rows]
+        return [(None, "\n".join(parts))]
+    if suffix in IMAGE_SUFFIXES:
+        from PIL import Image
+
+        with Image.open(f) as img:
+            return [(None, ocr(img))]
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+
+        pages = []
+        for i, page in enumerate(PdfReader(str(f)).pages, 1):
+            text = page.extract_text() or ""
+            if len(text.strip()) < OCR_MIN_CHARS:  # no text layer: a scan, read it with OCR
+                from pdf2image import convert_from_path
+
+                images = convert_from_path(str(f), dpi=200, first_page=i, last_page=i)
+                text = ocr(images[0]) if images else text
+            pages.append((i, text))
+        return pages
+    return []
 
 
 def indexed(client: QdrantClient) -> dict[str, str]:
@@ -75,10 +129,13 @@ def plan(current: dict[str, str], stored: dict[str, str]) -> tuple[list[str], li
     return to_index, to_delete
 
 
-def chunks(path: str, text: str, file_hash: str, splitter: SentenceSplitter):
-    """Split one file into nodes that know their line range. The doc id is the path, so a file's
-    chunks can be deleted together."""
-    doc = Document(text=text, id_=path, metadata={"file_path": path, "file_hash": file_hash})
+def chunks(path: str, text: str, file_hash: str, splitter: SentenceSplitter, page: int | None = None):
+    """Split one file (or one PDF page) into nodes that know their line range and page. The doc
+    id is the path, so a file's chunks can be deleted together."""
+    metadata = {"file_path": path, "file_hash": file_hash}
+    if page is not None:
+        metadata["page"] = page
+    doc = Document(text=text, id_=path, metadata=metadata)
     # The path goes into the embedded text (it helps retrieval); hash and lines don't
     doc.excluded_embed_metadata_keys = ["file_hash", "lines"]
     doc.excluded_llm_metadata_keys = ["file_hash"]
@@ -106,7 +163,12 @@ def run(root: Path = ROOT, client: QdrantClient | None = None, embed_model=None,
     n_chunks = 0
     for p in to_index:
         f, file_hash = current[p]
-        nodes = chunks(p, f.read_text(encoding="utf-8"), file_hash, splitter)
+        try:
+            pieces = extract(f)
+        except Exception as e:  # a broken PDF must not stop the whole run
+            log.warning("skipping %s: %s", p, e)
+            continue
+        nodes = [n for page, text in pieces if text.strip() for n in chunks(p, text, file_hash, splitter, page)]
         if not nodes:
             continue
         vectors = embed_model.get_text_embedding_batch([n.get_content(MetadataMode.EMBED) for n in nodes])

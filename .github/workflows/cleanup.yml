@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [ml-base, agent, agent-ui, mcp-filesystem, mcp-rag, mcp-triage, mlflow, pipelines, serving]
+        package: [ml-base, agent, agent-ui, mcp-filesystem, mcp-rag, mcp-triage, mlflow, pipelines, serving, voice]
     steps:
       - uses: actions/delete-package-versions@v5
         with:

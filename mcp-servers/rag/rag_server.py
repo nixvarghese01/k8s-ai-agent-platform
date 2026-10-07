@@ -60,7 +60,9 @@ def format_results(results) -> str:
         text = r.node.get_content().strip()
         if len(text) > MAX_PASSAGE_CHARS:
             text = text[:MAX_PASSAGE_CHARS] + " [...]"
-        out.append(f"[{i}] {meta.get('file_path', '?')}:{meta.get('lines', '?')} (score {r.score or 0:.2f})\n{text}")
+        # PDFs are cited by page (report.pdf p.2), everything else by line range (notes.md:3-9)
+        where = f" p.{meta['page']}" if meta.get("page") else f":{meta.get('lines', '?')}"
+        out.append(f"[{i}] {meta.get('file_path', '?')}{where} (score {r.score or 0:.2f})\n{text}")
     return "\n\n".join(out)
 
 

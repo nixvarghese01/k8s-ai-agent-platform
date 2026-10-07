@@ -3,4 +3,5 @@
 -r ../mcp-servers/triage/requirements.txt
 -r ../pipelines/requirements.txt
 -r ../serving/requirements.txt
+python-multipart==0.0.32  # voice server API (its models are not needed in tests)
 pytest==9.1.1

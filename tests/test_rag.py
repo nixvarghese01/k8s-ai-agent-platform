@@ -43,7 +43,7 @@ def setup(tmp_path):
         "# Meeting\n\nWe decided to buy a cooling stand.\nBudget is fifty euros.\n", encoding="utf-8"
     )
     (tmp_path / "recipes.txt").write_text("Pancakes need flour, milk and eggs.\n", encoding="utf-8")
-    (tmp_path / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n\x00\xff")  # skipped: not a text suffix
+    (tmp_path / "archive.zip").write_bytes(b"PK\x03\x04\x00\xff")  # skipped: unsupported format
     return tmp_path, QdrantClient(":memory:"), WordEmbedding()
 
 

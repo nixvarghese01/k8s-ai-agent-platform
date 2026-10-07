@@ -64,6 +64,27 @@ spec:
               value: sk-local # LiteLLM runs without a key; Open WebUI just needs a value
             - name: DEFAULT_MODELS
               value: chat-default
+            # Voice (README section 6.18): microphone -> Whisper, read-aloud -> Piper, both on the
+            # voice server in the voice profile. With the profile off, those two buttons fail;
+            # typing works as always.
+            - name: AUDIO_STT_ENGINE
+              value: openai
+            - name: AUDIO_STT_OPENAI_API_BASE_URL
+              value: http://voice.voice.svc.cluster.local:8000/v1
+            - name: AUDIO_STT_OPENAI_API_KEY
+              value: local # required by the form, unused
+            - name: AUDIO_STT_MODEL
+              value: whisper-1
+            - name: AUDIO_TTS_ENGINE
+              value: openai
+            - name: AUDIO_TTS_OPENAI_API_BASE_URL
+              value: http://voice.voice.svc.cluster.local:8000/v1
+            - name: AUDIO_TTS_OPENAI_API_KEY
+              value: local
+            - name: AUDIO_TTS_MODEL
+              value: tts-1
+            - name: AUDIO_TTS_VOICE
+              value: en_US-amy-medium
             - name: VECTOR_DB
               value: qdrant
             - name: QDRANT_URI

@@ -14,6 +14,7 @@ on:
       - mcp-servers/**
       - pipelines/**
       - serving/**
+      - voice/**
       - mlops/mlflow/**
       - images/**
       - .github/workflows/build.yml
@@ -77,6 +78,7 @@ jobs:
           - { name: mlflow, context: mlops/mlflow }
           - { name: pipelines, context: pipelines }
           - { name: serving, context: serving }
+          - { name: voice, context: voice }
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-buildx-action@v4
