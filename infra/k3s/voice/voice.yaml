@@ -40,8 +40,8 @@ spec:
         fsGroup: 1000
       containers:
         - name: voice
-          image: local-ai/voice:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-voice:sha-d3bf9c8c76f404d5455c8f3b1053746c8455b7a2@sha256:bfe2553d1d84382b3af1cafb1964eae24db1775d70e1bfbd2f3159f58a9eee0b
+          imagePullPolicy: IfNotPresent
           env:
             - name: WHISPER_MODEL
               value: base # tiny = faster, small = more accurate (and ~2x slower)
