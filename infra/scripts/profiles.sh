@@ -9,11 +9,11 @@
 #   profiles.sh apply         re-apply the stored choice (deploy.sh and `up` run this)
 #
 # Profiles: mlops (Postgres, SeaweedFS, MLflow, Dagster, model serving), observability
-# (tracing, metrics), automation (n8n), voice (speech-to-text, text-to-speech).
+# (tracing, metrics), automation (n8n), voice (speech-to-text, text-to-speech), gitops (ArgoCD).
 # A label value lists every profile that needs the Deployment, dot-separated (mlops.automation).
 set -euo pipefail
 export KUBECONFIG=${KUBECONFIG:-$([ "$EUID" -eq 0 ] && echo /etc/rancher/k3s/k3s.yaml || echo ~/.kube/config)}
-KNOWN="mlops observability automation voice"
+KNOWN="mlops observability automation voice gitops"
 
 stored() { kubectl -n kube-system get configmap platform-profiles -o jsonpath='{.data.active}' 2>/dev/null || true; }
 
@@ -22,9 +22,10 @@ store() {
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 }
 
-# "<namespace> <deployment> <profiles>" for every labelled Deployment
+# "<namespace> <kind/name> <profiles>" for every labelled Deployment and StatefulSet
 labelled() {
-  kubectl get deploy -A -l local-ai/profile -L local-ai/profile --no-headers | awk '{print $1, $2, $NF}'
+  kubectl get deploy,statefulset -A -l local-ai/profile -L local-ai/profile --no-headers 2>/dev/null |
+    awk '{print $1, $2, $NF}' | sed 's#deployment.apps/#deploy/#; s#statefulset.apps/#statefulset/#'
 }
 
 apply() {
@@ -34,16 +35,16 @@ apply() {
   labelled | while read -r ns name profs; do
     want=0
     for p in ${profs//./ }; do [[ "$active" == *",$p,"* ]] && want=1; done
-    have=$(kubectl -n "$ns" get deploy "$name" -o jsonpath='{.spec.replicas}')
-    [ "$have" = "$want" ] || kubectl -n "$ns" scale deploy "$name" --replicas="$want" >/dev/null
+    have=$(kubectl -n "$ns" get "$name" -o jsonpath='{.spec.replicas}')
+    [ "$have" = "$want" ] || kubectl -n "$ns" scale "$name" --replicas="$want" >/dev/null
     printf "  %-4s %-30s %s\n" "$([ "$want" = 1 ] && echo on || echo off)" "$ns/$name" "$profs"
   done
 }
 
 wait_ready() { # every Deployment that should run is available
   labelled | while read -r ns name _; do
-    [ "$(kubectl -n "$ns" get deploy "$name" -o jsonpath='{.spec.replicas}')" = 1 ] &&
-      kubectl -n "$ns" rollout status deploy "$name" --timeout=10m >/dev/null && echo "  ready $ns/$name"
+    [ "$(kubectl -n "$ns" get "$name" -o jsonpath='{.spec.replicas}')" = 1 ] &&
+      kubectl -n "$ns" rollout status "$name" --timeout=10m >/dev/null && echo "  ready $ns/$name"
   done
   true
 }
@@ -51,7 +52,7 @@ wait_ready() { # every Deployment that should run is available
 case "${1:-show}" in
   show)
     labelled | while read -r ns name profs; do
-      printf "  %-4s %-30s %s\n" "$([ "$(kubectl -n "$ns" get deploy "$name" -o jsonpath='{.spec.replicas}')" = 1 ] && echo on || echo off)" "$ns/$name" "$profs"
+      printf "  %-4s %-30s %s\n" "$([ "$(kubectl -n "$ns" get "$name" -o jsonpath='{.spec.replicas}')" = 1 ] && echo on || echo off)" "$ns/$name" "$profs"
     done
     s=$(stored); echo "active: core${s:+,$s}"
     ;;

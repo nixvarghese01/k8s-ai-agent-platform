@@ -1,0 +1,26 @@
+# Keep GHCR tidy (README §7): delete all but the newest versions of each image every week.
+# Public packages don't count against GHCR's free storage, but old versions pile up fast.
+name: cleanup
+
+on:
+  schedule:
+    - cron: "17 3 * * 0" # Sundays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  prune:
+    name: ${{ matrix.package }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [ml-base, agent, agent-ui, mcp-filesystem, mcp-rag, mcp-triage, mlflow, pipelines, serving]
+    steps:
+      - uses: actions/delete-package-versions@v5
+        with:
+          package-name: local-ai-${{ matrix.package }}
+          package-type: container
+          min-versions-to-keep: 10 # enough to roll back a few deploys

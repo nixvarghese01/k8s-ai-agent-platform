@@ -1,4 +1,4 @@
-# README §6.14: make Windows (and so Chrome and Edge) trust the platform's local CA, so the
+# README section 6.14: make Windows (and so Chrome and Edge) trust the platform's local CA, so the
 # *.ai.local sites open with a normal padlock. Run in PowerShell from the repo folder, after
 # 06-local-tls.sh. No admin needed: it goes into YOUR user's trusted roots, and Windows asks
 # you to confirm once. Firefox keeps its own store; import the same file there if you use it.

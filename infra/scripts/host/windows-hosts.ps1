@@ -1,4 +1,4 @@
-# README §6.7: make the platform's *.ai.local names reach Traefik from Windows, on any network.
+# README section 6.7: make the platform's *.ai.local names reach Traefik from Windows, on any network.
 #   1. hosts file: every name -> 127.0.0.1 (between # BEGIN/END local-ai-platform markers)
 #   2. port proxies 127.0.0.1:80/443 -> [::1]:80/443, because WSL relays Traefik's ports to
 #      Windows' IPv6 loopback only, and Chrome won't use ::1-only names when the network has
@@ -13,7 +13,7 @@ $begin = '# BEGIN local-ai-platform'
 $end = '# END local-ai-platform'
 # One name per line: Windows treats extra names on a line as aliases (CNAMEs) of the first,
 # and those don't always resolve (only the first name on each line is reliable).
-# Every UI lives under ai.local, so one sign-on cookie (domain ai.local) covers them all (§6.14)
+# Every UI lives under ai.local, so one sign-on cookie (domain ai.local) covers them all (section 6.14)
 $names = 'auth', 'chat', 'llm', 'agent', 'mlflow', 'dagster', 'n8n', 'phoenix', 'grafana', 'triage', 's3', 'qdrant', 'argocd', 'headlamp'
 $block = @($begin) + ($names | ForEach-Object { "127.0.0.1 $_.ai.local" }) + @($end)
 $ports = 80, 443

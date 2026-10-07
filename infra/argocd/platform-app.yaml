@@ -1,0 +1,35 @@
+# The platform as one ArgoCD Application: every manifest under infra/k3s on the development
+# branch. A push (or CI's image bump) is deployed within ~3 minutes.
+#   prune: false     never deletes what was removed from Git (PVCs hold your data); clean up by hand
+#   selfHeal: false  a kubectl change (a local test image, a profile switch) stays until the next
+#                    commit touches that resource, instead of being reverted at once
+# Secrets are created by deploy.sh and never live in Git, so ArgoCD doesn't see or touch them.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/nixvarghese01/local-ai-platform.git
+    targetRevision: development
+    path: infra/k3s
+    directory:
+      recurse: true
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: false
+    syncOptions:
+      - ApplyOutOfSyncOnly=true # only touch what changed
+  # Profile-managed workloads leave replicas to profiles.sh (scripts/profiles.sh)
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers: [/spec/replicas]
+    - group: apps
+      kind: StatefulSet
+      jsonPointers: [/spec/replicas]

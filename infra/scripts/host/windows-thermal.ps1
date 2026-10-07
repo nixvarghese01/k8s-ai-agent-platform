@@ -1,4 +1,4 @@
-# README §12: cap the CPU at 80% of its base clock on the active Windows power plan.
+# README section 12: cap the CPU at 80% of its base clock on the active Windows power plan.
 # Anything below 100% also turns off Turbo Boost. Run in PowerShell (no admin needed).
 # Undo: run again with -Max 100
 param([int]$Max = 80)

@@ -1,0 +1,8 @@
+numpy==2.5.3
+scipy==1.18.1
+pandas==3.0.6
+pyarrow==25.0.1
+scikit-learn==1.9.1
+skops==0.16.0
+mlflow-skinny==3.16.1
+boto3==1.43.109

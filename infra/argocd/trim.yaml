@@ -1,0 +1,18 @@
+# Parts of the upstream install this platform doesn't use (kustomization.yaml): removed
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-dex-server
+$patch: delete
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-notifications-controller
+$patch: delete
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-applicationset-controller
+$patch: delete

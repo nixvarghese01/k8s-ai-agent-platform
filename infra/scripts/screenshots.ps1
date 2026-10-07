@@ -3,8 +3,8 @@
 #
 # Drives headless Chrome (or Edge) over the DevTools protocol, so it waits until each page has
 # really rendered (Streamlit fills its page over a websocket after load). The agent page asks a
-# document question and opens the retrieved passages (5–20 s on CPU).
-# Every UI is behind single sign-on (README §6.14): the script captures the sign-in page, then
+# document question and opens the retrieved passages (5-20 s on CPU).
+# Every UI is behind single sign-on (README section 6.14): the script captures the sign-in page, then
 # signs in once with your platform login (asked for, or $env:LOCAL_AI_USER / LOCAL_AI_PASSWORD).
 # Apps with a login of their own (Open WebUI, Headlamp, SeaweedFS) stay at their sign-in screen.
 #   -Out <folder>  write somewhere else, e.g. to check every UI without touching the repo's images

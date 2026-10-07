@@ -1,4 +1,4 @@
-﻿# Assess this Windows machine against the platform's requirements (README §5) and write
+﻿# Assess this Windows machine against the platform's requirements (README section 5) and write
 # SYSTEM_ASSESSMENT.md at the repo root (git-ignored: it describes your machine only).
 # Read-only: changes nothing. Run in PowerShell from anywhere:
 #   .\infra\scripts\host\00-assess.ps1 [-Distro Ubuntu-26.04]
@@ -35,7 +35,7 @@ if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) { $nvidia = nvidia-smi
 
 $logical = $cpu.NumberOfLogicalProcessors
 Check 'CPU threads' '8+' "$logical ($($cpu.NumberOfCores) cores)" $(if ($logical -ge 8) { 'PASS' } elseif ($logical -ge 6) { 'WARN' } else { 'FAIL' }) 'Fewer threads: lower processors= in .wslconfig and expect slower inference'
-Check 'RAM' '32 GB' "$totalGB GB usable; Windows uses $usedGB GB now (WSL VM: $wslGB GB)" $(if ($totalGB -ge 31) { 'PASS' } elseif ($totalGB -ge 16) { 'WARN' } else { 'FAIL' }) 'Under 32 GB: trim the stack (README §15) and lower memory='
+Check 'RAM' '32 GB' "$totalGB GB usable; Windows uses $usedGB GB now (WSL VM: $wslGB GB)" $(if ($totalGB -ge 31) { 'PASS' } elseif ($totalGB -ge 16) { 'WARN' } else { 'FAIL' }) 'Under 32 GB: trim the stack (README section 15) and lower memory='
 $virt = $cs.HypervisorPresent -or $cpu.VirtualizationFirmwareEnabled
 Check 'Virtualization' 'enabled' $(if ($cs.HypervisorPresent) { 'hypervisor running' } elseif ($cpu.VirtualizationFirmwareEnabled) { 'enabled in firmware' } else { 'off' }) $(if ($virt) { 'PASS' } else { 'FAIL' }) 'Enable VT-x/AMD-V in BIOS'
 $best = $vols | Select-Object -First 1
@@ -105,7 +105,7 @@ $report = @"
 
 Generated $now by ``infra/scripts/host/00-assess.ps1`` on **$($cs.Manufacturer) $($cs.Model)**. Read-only snapshot of this machine; git-ignored. Re-run after each setup step.
 
-**Summary:** $($sum -join ' · ')
+**Summary:** $($sum -join ' - ')
 
 ## Readiness
 

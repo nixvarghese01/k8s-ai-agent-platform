@@ -2,7 +2,7 @@
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 
-.PHONY: profile set-login up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
+.PHONY: argocd argocd-password profile set-login up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
 
 up:        ## start Ollama + k3s and wait until every pod is Ready
 	bash infra/scripts/platform.sh up
@@ -53,6 +53,12 @@ s3-credentials: ## print the SeaweedFS admin UI password (user admin) and the S3
 
 set-login: ## choose the single sign-on username + password for every *.ai.local UI
 	bash infra/scripts/set-login.sh
+
+argocd:    ## install/update ArgoCD + the platform Application, switch on the gitops profile
+	bash infra/argocd/install.sh
+
+argocd-password: ## print ArgoCD's initial admin password (user admin)
+	@kubectl -n argocd get secret argocd-initial-admin-secret -o jsonpath='{.data.password}' | base64 -d; echo
 
 headlamp-token: ## print the Headlamp login token (cluster-admin; README §6.11)
 	@kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d; echo

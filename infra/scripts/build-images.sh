@@ -11,12 +11,19 @@ cd "$(dirname "$0")/../.."
 
 # image name -> build folder, namespace/deployment
 declare -A DIR=([mcp-filesystem]=mcp-servers/filesystem [mcp-rag]=mcp-servers/rag [mcp-triage]=mcp-servers/triage [serving]=serving [agent]=agent [agent-ui]=ui [mlflow]=mlops/mlflow [pipelines]=pipelines)
+# shellcheck disable=SC2054  # the comma joins two deployments of one image, by design
 declare -A DEPLOY=([mcp-filesystem]=agent/mcp-filesystem [mcp-rag]=agent/mcp-rag [mcp-triage]=agent/mcp-triage [serving]=mlops/triage [agent]=agent/agent [agent-ui]=ui/agent-ui [mlflow]=mlops/mlflow [pipelines]=mlops/dagster-webserver,dagster-daemon)
 
 names=("$@")
 [ ${#names[@]} -gt 0 ] || names=(mcp-filesystem mcp-rag mcp-triage agent agent-ui mlflow pipelines serving)
 
 systemctl start docker
+# mlflow, pipelines and serving build FROM local-ai/ml-base (shared layers); build it first
+for n in "${names[@]}"; do
+  case "$n" in mlflow|pipelines|serving)
+    echo "== local-ai/ml-base:dev"; docker build -t local-ai/ml-base:dev images/ml-base; break ;;
+  esac
+done
 for n in "${names[@]}"; do
   [ -n "${DIR[$n]:-}" ] || { echo "unknown image: $n" >&2; exit 1; }
   img=local-ai/$n:dev

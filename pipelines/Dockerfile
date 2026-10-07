@@ -1,5 +1,6 @@
 # Dagster webserver + daemon + the triage pipeline code (infra/k3s/mlops/dagster.yaml).
-FROM python:3.13-slim
+ARG BASE=local-ai/ml-base:dev
+FROM ${BASE}
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

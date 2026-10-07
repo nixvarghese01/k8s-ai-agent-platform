@@ -1,5 +1,6 @@
 # BentoML service for the message-triage model (infra/k3s/mlops/serving.yaml, README §6.15).
-FROM python:3.13-slim
+ARG BASE=local-ai/ml-base:dev
+FROM ${BASE}
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

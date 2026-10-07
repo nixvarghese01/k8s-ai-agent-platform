@@ -12,7 +12,7 @@
 # `down` without -KeepWsl closes any open Ubuntu terminals too.
 param(
     [Parameter(Mandatory, Position = 0)][ValidateSet('up', 'down', 'status', 'restart', 'headlamp-token', 'set-login', 'profile')][string]$Action,
-    [Parameter(Position = 1)][string]$Profile,
+    [Parameter(Position = 1)][Alias('Profile')][string]$Profiles,  # not $Profile: that's PowerShell's own $PROFILE
     [switch]$Docker,
     [switch]$KeepWsl
 )
@@ -29,7 +29,7 @@ function Invoke-Platform([string[]]$ArgList) {
 }
 
 $extra = @(); if ($Docker) { $extra += '--docker' }
-if ($Profile -and $Action -ne 'profile') { $extra += @('--profile', $Profile) }
+if ($Profiles -and $Action -ne 'profile') { $extra += @('--profile', $Profiles) }
 
 switch ($Action) {
     'up' { Invoke-Platform (@('up') + $extra) }
@@ -45,8 +45,8 @@ switch ($Action) {
     }
     'status' { wsl -d $distro -- bash "$here/status.sh" }
     'profile' {
-        if (-not $Profile) { wsl -d $distro -u root -- bash "$here/profiles.sh"; return }
-        Invoke-Platform @('profile', $Profile)
+        if (-not $Profiles) { wsl -d $distro -u root -- bash "$here/profiles.sh"; return }
+        Invoke-Platform @('profile', $Profiles)
     }
     'headlamp-token' {
         # As root, so no Ubuntu password is needed; the token is cluster-admin (ui/headlamp.yaml)
