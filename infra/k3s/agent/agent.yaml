@@ -109,6 +109,10 @@ spec:
               value: http://litellm.llm.svc.cluster.local:4000/v1
             - name: LLM_MODEL
               value: chat-tools
+            # Traces of every agent run (retrieve, model calls, tools) in Phoenix (§6.16);
+            # nothing is sent while the observability profile is off
+            - name: PHOENIX_COLLECTOR_ENDPOINT
+              value: http://phoenix.observability.svc.cluster.local:6006
             # Add an MCP server here and restart the agent; no code change needed
             - name: MCP_SERVERS
               value: |

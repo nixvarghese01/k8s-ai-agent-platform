@@ -57,6 +57,10 @@ if ! kubectl -n auth get secret authelia-secrets >/dev/null 2>&1; then
   kubectl -n auth create secret generic authelia-secrets --from-literal=session-secret="$(rand 32)" \
     --from-literal=storage-encryption-key="$(rand 32)" --from-literal=jwt-secret="$(rand 32)"
 fi
+# n8n encrypts its stored credentials with this key; losing it means re-entering them
+if ! kubectl -n automation get secret n8n-secret >/dev/null 2>&1; then
+  kubectl -n automation create secret generic n8n-secret --from-literal=encryption-key="$(rand 24)"
+fi
 if ! kubectl -n auth get secret authelia-users >/dev/null 2>&1; then
   bash infra/scripts/set-login.sh --bootstrap
 fi

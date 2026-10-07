@@ -58,6 +58,9 @@ data:
     litellm_settings:
       drop_params: true      # ignore OpenAI params a backend doesn't support
       request_timeout: 600   # 3B models on CPU can take minutes on long prompts
+      # Every LLM call (Open WebUI, agent, n8n) as an OpenTelemetry trace in Phoenix (§6.16).
+      # With the observability profile off, the export fails quietly and calls are unaffected.
+      callbacks: ["arize_phoenix"]
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -85,6 +88,11 @@ spec:
           ports:
             - name: http
               containerPort: 4000
+          env:
+            - name: PHOENIX_COLLECTOR_HTTP_ENDPOINT
+              value: http://phoenix.observability.svc.cluster.local:6006/v1/traces
+            - name: PHOENIX_PROJECT_NAME
+              value: litellm
           # Uncomment with the chat-cloud entry above, after:
           #   kubectl -n llm create secret generic litellm-keys --from-literal=ANTHROPIC_API_KEY=...
           # envFrom:

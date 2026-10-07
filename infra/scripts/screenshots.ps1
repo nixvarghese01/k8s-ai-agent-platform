@@ -37,6 +37,10 @@ $pages = [ordered]@{
     mlflow   = @('https://mlflow.ai.local/#/models/message-triage', "document.body.innerText.includes('champion')", 60)
     dagster  = @('https://dagster.ai.local/assets/triage_model', "document.body.innerText.includes('test_f1')", 60)
     s3       = @('https://s3.ai.local/', "!!document.querySelector('input[type=password]')", 30)
+    triage   = @('https://triage.ai.local/', "document.body.innerText.includes('classify')", 60)
+    phoenix  = @('https://phoenix.ai.local/projects', "document.body.innerText.includes('agent') && document.body.innerText.includes('litellm')", 60)
+    grafana  = @('https://grafana.ai.local/d/platform-overview?orgId=1&kiosk', "document.body.innerText.includes('Memory by namespace') && !document.body.innerText.includes('Loading')", 60)
+    n8n      = @('https://n8n.ai.local/', "/owner|sign in|workflows/i.test(document.body.innerText)", 60)
 }
 
 # --- minimal DevTools protocol client (System.Net.WebSockets, works in Windows PowerShell 5.1)
@@ -90,7 +94,11 @@ try {
         if ($Only -and $name -notin $Only -and $name -ne 'auth') { continue }  # sign-in always runs
         $url, $ready, $wait = $pages[$name]
         Send-Cdp 'Page.navigate' @{ url = $url } | Out-Null
-        if (-not (Wait-Js $ready $wait)) { Write-Warning "$name did not render in $wait s: $url"; continue }
+        if (-not (Wait-Js $ready $wait)) {
+            $seen = (Send-Cdp 'Runtime.evaluate' @{ expression = "location.href + ' | ' + document.title + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')"; returnByValue = $true }).result.value
+            Write-Warning "$name did not render in $wait s: $url`n  the page shows: $seen"
+            continue
+        }
 
         if ($name -eq 'agent') {
             Send-Cdp 'Runtime.evaluate' @{ expression = "document.querySelector('[data-testid=stChatInput] textarea').focus()" } | Out-Null

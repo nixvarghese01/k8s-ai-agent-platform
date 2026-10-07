@@ -16,6 +16,8 @@ spec:
       # On the host network the pod would use WSL's resolver and fail to look up in-cluster
       # names such as authelia.auth.svc.cluster.local (the single sign-on check)
       dnsPolicy: ClusterFirstWithHostNet
+    # WSL relays these ports to Windows' [::1] only (Traefik's socket is dual-stack IPv6, even
+    # with hostIP 0.0.0.0); windows-hosts.ps1 adds 127.0.0.1 -> [::1] port proxies (README §6.7)
     ports:
       web:
         port: 80

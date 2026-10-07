@@ -1,0 +1,91 @@
+# The n8n workflows (README §6.17), imported and activated on every n8n start by its init
+# container, so this file is the source of truth: edits made in the n8n UI are replaced on the
+# next start. To change a workflow: edit it in the UI, export it (... > Download), paste it here.
+#   email-triage    POST http://n8n.automation.svc.cluster.local:5678/webhook/email-triage
+#                   {"from", "subject", "body"} -> spam verdict (BentoML) or category + summary (LLM)
+#   daily-briefing  07:30 Asia/Dubai, or GET .../webhook/daily-briefing: asks the agent for today's
+#                   to-dos and decisions, writes E:\ai-files\briefings\<date>.md
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-workflows
+  namespace: automation
+data:
+  email-triage.json: |
+    {
+      "id": "lapEmailTriage01",
+      "name": "Email triage",
+      "active": true,
+      "settings": {"executionOrder": "v1", "timezone": "Asia/Dubai"},
+      "nodes": [
+        {"id": "a1", "name": "Email in", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 0],
+         "webhookId": "ba62f7c1-c0eb-5c80-8860-79cf3ff46cb4",
+         "parameters": {"httpMethod": "POST", "path": "email-triage", "responseMode": "responseNode", "options": {}}},
+        {"id": "a2", "name": "Classify (BentoML)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [240, 0],
+         "parameters": {"method": "POST", "url": "http://triage.mlops.svc.cluster.local:3000/classify",
+           "sendBody": true, "specifyBody": "json",
+           "jsonBody": "={{ JSON.stringify({ texts: [($json.body.subject || '') + '\\n\\n' + ($json.body.body || '')] }) }}",
+           "options": {"timeout": 30000}}},
+        {"id": "a3", "name": "Spam?", "type": "n8n-nodes-base.if", "typeVersion": 2.2, "position": [480, 0],
+         "parameters": {"conditions": {"options": {"caseSensitive": true, "typeValidation": "strict", "version": 2},
+           "combinator": "and",
+           "conditions": [{"id": "c1", "leftValue": "={{ $json.label }}", "rightValue": "spam",
+             "operator": {"type": "string", "operation": "equals"}}]}, "options": {}}},
+        {"id": "a4", "name": "Reply: spam", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [720, -120],
+         "parameters": {"respondWith": "json",
+           "responseBody": "={{ JSON.stringify({ verdict: 'spam', spam_probability: $json.spam_probability, model_version: $json.model_version, action: 'move to Junk; do not open links' }) }}",
+           "options": {}}},
+        {"id": "a5", "name": "Categorise + summarise (LLM)", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [720, 120],
+         "parameters": {"method": "POST", "url": "http://litellm.llm.svc.cluster.local:4000/v1/chat/completions",
+           "sendHeaders": true, "headerParameters": {"parameters": [{"name": "Authorization", "value": "Bearer sk-local"}]},
+           "sendBody": true, "specifyBody": "json",
+           "jsonBody": "={{ JSON.stringify({ model: 'chat-default', temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'You sort e-mail. Reply with JSON only: {\"category\": one of work, personal, billing, newsletter, other; \"summary\": one short sentence; \"needs_reply\": true or false}.' }, { role: 'user', content: 'From: ' + ($('Email in').item.json.body.from || '') + '\\nSubject: ' + ($('Email in').item.json.body.subject || '') + '\\n\\n' + ($('Email in').item.json.body.body || '') } ] }) }}",
+           "options": {"timeout": 300000}}},
+        {"id": "a6", "name": "Reply: sorted", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [960, 120],
+         "parameters": {"respondWith": "json",
+           "responseBody": "={{ JSON.stringify(Object.assign({ verdict: 'ham', spam_probability: $('Classify (BentoML)').item.json.spam_probability }, JSON.parse($json.choices[0].message.content))) }}",
+           "options": {}}}
+      ],
+      "connections": {
+        "Email in": {"main": [[{"node": "Classify (BentoML)", "type": "main", "index": 0}]]},
+        "Classify (BentoML)": {"main": [[{"node": "Spam?", "type": "main", "index": 0}]]},
+        "Spam?": {"main": [[{"node": "Reply: spam", "type": "main", "index": 0}], [{"node": "Categorise + summarise (LLM)", "type": "main", "index": 0}]]},
+        "Categorise + summarise (LLM)": {"main": [[{"node": "Reply: sorted", "type": "main", "index": 0}]]}
+      }
+    }
+  daily-briefing.json: |
+    {
+      "id": "lapDailyBrief001",
+      "name": "Daily briefing",
+      "active": true,
+      "settings": {"executionOrder": "v1", "timezone": "Asia/Dubai"},
+      "nodes": [
+        {"id": "b1", "name": "Every morning 07:30", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1.2, "position": [0, 0],
+         "parameters": {"rule": {"interval": [{"field": "cronExpression", "expression": "30 7 * * *"}]}}},
+        {"id": "b2", "name": "On request", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [0, 200],
+         "webhookId": "1931b963-79e9-5674-8ac2-de789529ce5d",
+         "parameters": {"httpMethod": "GET", "path": "daily-briefing", "responseMode": "lastNode", "options": {}}},
+        {"id": "b3", "name": "Ask the agent", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [260, 100],
+         "parameters": {"method": "POST", "url": "http://agent.agent.svc.cluster.local:8000/chat",
+           "sendBody": true, "specifyBody": "json",
+           "jsonBody": "={{ JSON.stringify({ message: 'For my morning briefing: what is on my to-do list?' }) }}",
+           "options": {"timeout": 900000}}},
+        {"id": "b4", "name": "Build the note", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [520, 100],
+         "parameters": {"mode": "manual", "assignments": {"assignments": [
+           {"id": "s1", "name": "date", "type": "string", "value": "={{ $now.setZone('Asia/Dubai').toFormat('yyyy-MM-dd') }}"},
+           {"id": "s2", "name": "markdown", "type": "string",
+            "value": "=# Briefing {{ $now.setZone('Asia/Dubai').toFormat('cccc d LLLL yyyy') }}\n\n## To-do\n\n{{ $json.answer }}\n\n---\n_Written by n8n (Daily briefing) at {{ $now.setZone('Asia/Dubai').toFormat('HH:mm') }}; the agent took {{ $json.seconds }} s._\n"}]},
+           "options": {}}},
+        {"id": "b5", "name": "To file", "type": "n8n-nodes-base.convertToFile", "typeVersion": 1.1, "position": [760, 100],
+         "parameters": {"operation": "toText", "sourceProperty": "markdown", "options": {"fileName": "={{ $json.date }}.md"}}},
+        {"id": "b6", "name": "Save to briefings", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [1000, 100],
+         "parameters": {"operation": "write", "fileName": "=/briefings/{{ $('Build the note').item.json.date }}.md", "dataPropertyName": "data", "options": {}}}
+      ],
+      "connections": {
+        "Every morning 07:30": {"main": [[{"node": "Ask the agent", "type": "main", "index": 0}]]},
+        "On request": {"main": [[{"node": "Ask the agent", "type": "main", "index": 0}]]},
+        "Ask the agent": {"main": [[{"node": "Build the note", "type": "main", "index": 0}]]},
+        "Build the note": {"main": [[{"node": "To file", "type": "main", "index": 0}]]},
+        "To file": {"main": [[{"node": "Save to briefings", "type": "main", "index": 0}]]}
+      }
+    }

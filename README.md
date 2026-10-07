@@ -87,7 +87,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 ## 3. Architecture
 
 ```text
-Windows 11 (32 GB) ── browser ──► http://*.ai.local (hosts file → ::1 → WSL)
+Windows 11 (32 GB) ── browser ──► https://*.ai.local (hosts file → 127.0.0.1 → port proxy → ::1 → WSL)
    └── WSL2 (18 GB RAM, 8 cores)
          └── Ubuntu 26.04 (systemd enabled; services start on demand, see 6.6)
                ├── Ollama (systemd service on the WSL host, :11434)
@@ -172,7 +172,7 @@ local-ai-platform/
 │       │   ├── 05-on-demand-services.sh
 │       │   ├── windows-wsl-idle.ps1
 │       │   ├── 06-local-tls.sh      # local CA + *.ai.local certificate (6.14)
-│       │   ├── windows-hosts.ps1    # *.ai.local → ::1 in the hosts file (admin)
+│       │   ├── windows-hosts.ps1    # *.ai.local → 127.0.0.1 + port proxies to ::1 (admin)
 │       │   ├── windows-trust-ca.ps1 # Windows trusts the local CA
 │       │   └── windows-thermal.ps1
 │       ├── platform.ps1    # up / down / status from Windows
@@ -395,24 +395,24 @@ Scripts only start and stop services; what runs inside k3s comes from the manife
 Script: [`windows-hosts.ps1`](infra/scripts/host/windows-hosts.ps1) (admin PowerShell, from the repo folder). It backs up the hosts file, adds the lines below between `# BEGIN/END local-ai-platform` markers, and is safe to re-run; `-Remove` takes them out again. Manual equivalent, in `C:\Windows\System32\drivers\etc\hosts` (as admin):
 
 ```text
-::1 auth.ai.local
-::1 chat.ai.local
-::1 llm.ai.local
-::1 agent.ai.local
-::1 mlflow.ai.local
-::1 dagster.ai.local
-::1 n8n.ai.local
-::1 langfuse.ai.local
-::1 grafana.ai.local
-::1 s3.ai.local
-::1 qdrant.ai.local
-::1 argocd.ai.local
-::1 headlamp.ai.local
+127.0.0.1 auth.ai.local
+127.0.0.1 chat.ai.local
+127.0.0.1 llm.ai.local
+127.0.0.1 agent.ai.local
+127.0.0.1 mlflow.ai.local
+127.0.0.1 dagster.ai.local
+127.0.0.1 n8n.ai.local
+127.0.0.1 langfuse.ai.local
+127.0.0.1 grafana.ai.local
+127.0.0.1 s3.ai.local
+127.0.0.1 qdrant.ai.local
+127.0.0.1 argocd.ai.local
+127.0.0.1 headlamp.ai.local
 ```
 
-One name per line: Windows treats extra names on a line as aliases of the first, and those don't resolve for `::1`.
+One name per line: Windows treats extra names on a line as aliases of the first, and those don't always resolve.
 
-Use `::1`, not `127.0.0.1`. Traefik runs on the WSL host's ports 80/443 ([traefik-config.yaml](infra/k3s/ingress/traefik-config.yaml)), and WSL forwards those to Windows' IPv6 localhost only. `http://localhost/` works for the same reason.
+Why `127.0.0.1` plus port proxies: Traefik runs on the WSL host's ports 80/443 ([traefik-config.yaml](infra/k3s/ingress/traefik-config.yaml)), and WSL relays them to Windows' IPv6 loopback `[::1]` only (Traefik's socket is dual-stack IPv6). Hosts entries pointing at `::1` work until the network has no IPv6: then Chrome stops resolving IPv6-only names and every page fails with `DNS_PROBE_FINISHED_NXDOMAIN` (seen 2026-10-08). So the script also adds Windows port proxies `127.0.0.1:80/443 → [::1]:80/443` (`netsh interface portproxy show v4tov6`), kept across reboots, and the names point at `127.0.0.1`, which works on any network.
 
 ### 6.8 Thermal settings (optional)
 
@@ -889,7 +889,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Single sign-on | **Resolved:** every UI is behind Authelia over HTTPS ([6.14](#614-single-sign-on-and-https-authelia)). One factor (password) for now; switch the rule to `two_factor` before exposing anything beyond this PC. The local CA's private key (`/var/lib/local-ai-ca`, root-only in WSL) can sign certificates your browser trusts: keep it there, and remove the CA with `windows-trust-ca.ps1 -Remove` if you retire the platform. |
 | RAG image size | `local-ai/mcp-rag` is ~600 MB (LlamaIndex pulls NumPy, NLTK, SQLAlchemy, Pillow), against ~80 MB for the other images. Public GHCR images have no size limit; keep it public, or slim it before Week 7 if it must be private. |
 | RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |
-| WSL networking | **Resolved:** Traefik listens on the WSL host's ports and hosts entries point at `::1` ([6.7](#67-local-dns-for-local-hostnames)), so a changing WSL IP doesn't matter. Needs WSL's default NAT mode with `localhostForwarding=true`. |
+| WSL networking | **Resolved:** Traefik listens on the WSL host's ports; hosts entries point at `127.0.0.1`, which Windows port proxies forward to the `[::1]` WSL relay ([6.7](#67-local-dns-for-local-hostnames)), so neither a changing WSL IP nor a network without IPv6 matters. Needs WSL's default NAT mode with `localhostForwarding=true` and the IP Helper service. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
 | Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.3 GB. Watch it as services are added. |
 | LiteLLM image | **Pinned** to `v1.103.1` (tag + digest) in [`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml). Upgrade deliberately: change the tag, apply, run `make status`. No master key: fine while the API is reachable only from this PC, but add one (a Secret) before exposing it. |

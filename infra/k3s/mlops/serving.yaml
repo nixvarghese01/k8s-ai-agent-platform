@@ -18,6 +18,10 @@ spec:
     metadata:
       labels:
         app: triage
+      annotations: # request counts and latency for Prometheus / Grafana (observability profile)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: /metrics
     spec:
       containers:
         - name: triage

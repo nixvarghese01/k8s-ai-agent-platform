@@ -23,6 +23,29 @@ from graph import LLM_MODEL, MCP_SERVERS, RETRIEVE_TOOL, build_graph, load_tools
 log = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+
+def tracing():
+    """Trace every agent run (LangGraph steps, model calls, tools) to Phoenix (README §6.16).
+
+    Spans are batched in the background; while the observability profile is off the export just
+    fails, so its errors are silenced instead of logged on every question."""
+    endpoint = os.environ.get("PHOENIX_COLLECTOR_ENDPOINT")
+    if not endpoint:
+        return
+    from openinference.instrumentation.langchain import LangChainInstrumentor
+    from phoenix.otel import register
+
+    # Not the global tracer: FastAPI emits spans for every request to a global one, and the
+    # 10-second health probes would bury the agent runs. Only LangChain/LangGraph gets it.
+    provider = register(project_name="agent", endpoint=f"{endpoint}/v1/traces", batch=True,
+                        set_global_tracer_provider=False)
+    LangChainInstrumentor().instrument(tracer_provider=provider)
+    for name in ("opentelemetry.exporter.otlp.proto.http.trace_exporter", "opentelemetry.sdk._shared_internal"):
+        logging.getLogger(name).setLevel(logging.CRITICAL)
+
+
+tracing()
+
 # Model + tool round trips per question; stops a small model from looping forever
 MAX_STEPS = int(os.environ.get("MAX_STEPS", "12"))
 
