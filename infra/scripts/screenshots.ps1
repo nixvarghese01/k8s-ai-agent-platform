@@ -41,6 +41,8 @@ $pages = [ordered]@{
     phoenix  = @('https://phoenix.ai.local/projects', "document.body.innerText.includes('agent') && document.body.innerText.includes('litellm')", 60)
     grafana  = @('https://grafana.ai.local/d/platform-overview?orgId=1&kiosk', "document.body.innerText.includes('Memory by namespace') && !document.body.innerText.includes('Loading')", 60)
     n8n      = @('https://n8n.ai.local/', "/owner|sign in|workflows/i.test(document.body.innerText)", 60)
+    argocd   = @('https://argocd.ai.local/', "/username|applications/i.test(document.body.innerText)", 60)
+    actions  = @('https://github.com/nixvarghese01/local-ai-platform/actions', "document.body.innerText.includes('build')", 60)
 }
 
 # --- minimal DevTools protocol client (System.Net.WebSockets, works in Windows PowerShell 5.1)

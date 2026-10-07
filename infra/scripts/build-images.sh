@@ -1,6 +1,9 @@
 #!/bin/bash
-# Build the platform's own images with Docker and load them into k3s (no registry needed;
-# GHCR comes with CI in Week 7). Then restart the deployments that use them.
+# Build the platform's own images locally and run them in k3s, to try a change before pushing.
+# CI builds the real ones (GHCR, pinned by digest in the manifests, deployed by ArgoCD); this
+# script imports local-ai/<name>:dev into k3s and points the deployments at it. ArgoCD doesn't
+# self-heal, so the local image stays until the next commit that touches that manifest (or
+# `kubectl apply -f` of it) brings the GHCR image back.
 # Run inside Ubuntu from the repo root:  bash infra/scripts/build-images.sh [name ...]
 #   names: mcp-filesystem mcp-rag mcp-triage agent agent-ui mlflow pipelines serving (default: all)
 # Needs root for `k3s ctr`; re-runs itself with sudo when started as a normal user.
@@ -31,11 +34,12 @@ for n in "${names[@]}"; do
   docker build -t "$img" "${DIR[$n]}"
   docker save "$img" | k3s ctr images import -
   ns=${DEPLOY[$n]%/*}
-  # Restart only if already deployed; `make deploy` creates it otherwise. One image can back
-  # several deployments (pipelines: webserver,daemon).
+  # Point the deployments at the local image (if deployed). One image can back several
+  # deployments (pipelines: webserver,daemon).
   deploys=${DEPLOY[$n]#*/}
   for d in ${deploys//,/ }; do
     if kubectl -n "$ns" get deploy "$d" >/dev/null 2>&1; then
+      kubectl -n "$ns" set image deploy "$d" "*=docker.io/$img" >/dev/null
       kubectl -n "$ns" rollout restart deploy "$d"
     fi
   done

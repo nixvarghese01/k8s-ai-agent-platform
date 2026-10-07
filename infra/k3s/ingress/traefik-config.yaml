@@ -32,6 +32,13 @@ spec:
     providers:
       kubernetesCRD:
         allowCrossNamespace: true
+      kubernetesIngress:
+        # Write an address into every Ingress' status; without one ArgoCD reports the Ingresses,
+        # and so the whole platform, as "Progressing" forever. 127.0.0.1 is where they're reached.
+        ingressEndpoint:
+          ip: 127.0.0.1
+        publishedService:
+          enabled: false # k3s turns it on; it would copy the (empty) ClusterIP Service status instead
     service:
       spec:
         type: ClusterIP # no servicelb pod competing for 80/443 (chart 40.x: service.spec.type)

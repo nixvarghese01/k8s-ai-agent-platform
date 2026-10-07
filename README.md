@@ -133,9 +133,10 @@ local-ai-platform/
 ├── Makefile                # make up / down / status / deploy / llm-reload (inside Ubuntu)
 ├── .gitignore              # also keeps machine-specific files (SYSTEM_*.md, DEVICE_LOG.md) local
 ├── .github/workflows/
-│   ├── ci.yml              # lint + tests
-│   ├── build.yml           # build images, push to GHCR, bump manifests
-│   └── cleanup.yml         # prune old GHCR images (stay under 500 MB)
+│   ├── workflows/ci.yml       # pytest, kubeconform, ShellCheck, PSScriptAnalyzer
+│   ├── workflows/build.yml    # images to GHCR, digests pinned in infra/k3s
+│   ├── workflows/cleanup.yml  # keep the newest 10 versions per image
+│   └── bump-images.py         # used by build.yml
 ├── infra/
 │   ├── k3s/
 │   │   ├── namespaces.yaml
@@ -162,9 +163,10 @@ local-ai-platform/
 │   │   ├── ingress/ingresses.yaml # *.ai.local, HTTPS, behind auth/authelia
 │   │   ├── ingress/tls.yaml       # Traefik's default certificate (*.ai.local)
 │   │   └── ingress/traefik-config.yaml
-│   ├── argocd/
-│   │   ├── install.sh
-│   │   └── app.yaml
+│   ├── argocd/             # ArgoCD v3.5.4 trimmed + Application "platform" (README 7)
+│   │   ├── kustomization.yaml
+│   │   ├── install.sh      # make argocd
+│   │   └── platform-app.yaml
 │   └── scripts/
 │       ├── host/           # one-time machine setup, numbered in run order (see 6.x)
 │       │   ├── 00-assess.ps1 (+ assess-wsl.sh)  # read-only readiness report
@@ -379,6 +381,7 @@ After [`05-on-demand-services.sh`](infra/scripts/host/05-on-demand-services.sh) 
 | `observability` | tracing and metrics (Week 6) | debugging, measuring latency |
 | `automation` | n8n (Week 6) | scheduled workflows |
 | `voice` | speech-to-text, text-to-speech (Week 8) | talking to the agent |
+| `gitops` | ArgoCD (Week 7) | deploying from GitHub |
 
 | From Windows | Inside Ubuntu | What it does |
 |---|---|---|
@@ -673,25 +676,31 @@ Try it from a pod: `curl -X POST http://n8n.automation.svc.cluster.local:5678/we
 ## 7. CI/CD and GitOps
 
 ```text
-Push to GitHub
-   ↓
-GitHub Actions: test + build image
-   ↓
-Push to GHCR
-   ↓
-ArgoCD (in k3s) pulls manifests
-   ↓
-Deploys to laptop k3s
+git push (development)
+   ├─► ci.yml     pytest (42 tests) · kubeconform · ShellCheck · PSScriptAnalyzer · n8n workflow check
+   └─► build.yml  ml-base ─► 8 images in parallel ─► ghcr.io/nixvarghese01/local-ai-<name> (public)
+                     └─► bump job: new digests pinned in infra/k3s, committed ("Deploy images built from <sha>")
+                                     │
+ArgoCD (in k3s, profile gitops) ◄────┘ polls development every ~3 min, syncs infra/k3s
 ```
 
-| Component | Cost / limit |
-|---|---|
-| GitHub Actions | Free tier, 2,000 min/month (private repos; unlimited for public) |
-| GHCR | 500 MB free for private packages |
-| ArgoCD | Runs locally, no cost |
-| Self-hosted runner | Optional, unlimited free minutes |
+| Piece | File | Notes |
+|---|---|---|
+| CI | [`ci.yml`](.github/workflows/ci.yml) | Every push and PR. Live checks stay in `make status` (CI can't reach the laptop) |
+| Image builds | [`build.yml`](.github/workflows/build.yml), [`bump-images.py`](.github/bump-images.py) | Reproducible (`SOURCE_DATE_EPOCH=0`, no attestations): an unchanged image keeps its digest, so its pods aren't restarted; only changed digests are committed |
+| Shared ML base | [`images/ml-base/`](images/ml-base/Dockerfile) | pandas, scikit-learn, pyarrow, MLflow (skinny), boto3, used by `mlflow`, `pipelines`, `serving`: their own layers went from 3.5 GB to 2.0 GB (all images 5.1 → 3.6 GB) |
+| GHCR cleanup | [`cleanup.yml`](.github/workflows/cleanup.yml) | Weekly; keeps the newest 10 versions per image |
+| ArgoCD | [`infra/argocd/`](infra/argocd/kustomization.yaml) | v3.5.4 without Dex, notifications and ApplicationSet: **204 MB**. Application `platform` = `infra/k3s` on `development` |
 
-**Why ArgoCD:** it runs *inside* the cluster and pulls from GitHub, so the laptop never needs inbound network access.
+**Install ArgoCD** (once, inside Ubuntu): `make argocd`. It applies [`infra/argocd`](infra/argocd/kustomization.yaml), turns on the `gitops` profile and waits. UI: https://argocd.ai.local, user `admin`, password `make argocd-password` (second layer behind the sign-on). With the `gitops` profile off, nothing deploys from GitHub; `make deploy` still works by hand.
+
+**Sync policy:** automatic, **no prune** (deleting a manifest never deletes its PVC and data; clean up by hand) and **no self-heal** (a local test or a profile switch isn't reverted until the next commit touches that resource). Replicas are ignored in diffs, since profiles own them. ArgoCD skips the static `EndpointSlice` for Ollama (excluded by ArgoCD's defaults); `make deploy` applies it.
+
+**Trying a change before pushing:** `make test`, then `make images` (or `bash infra/scripts/build-images.sh agent`) builds the image locally, imports it into k3s and points the deployment at `local-ai/<name>:dev`. Push when it works; CI rebuilds it and ArgoCD replaces the local image with the GHCR one.
+
+**Images are public** (the repo is public): free, no size limit, and the cluster pulls them without a secret. Verified with anonymous pulls of all 9.
+
+**First run (2026-10-08):** ci 2 min 23 s (lint 12 s, tests 138 s), build 4 min 4 s; ArgoCD deployed the bump commit by itself and all 9 deployments run `ghcr.io/...@sha256:...`. Fixed on the way: Traefik didn't publish an address in Ingress status (k3s's `publishedService` copied the empty ClusterIP), so ArgoCD reported the platform "Progressing" forever; Traefik now publishes `127.0.0.1` and the app is Healthy.
 
 ---
 
@@ -715,7 +724,7 @@ Deploys to laptop k3s
 | n8n (profile automation) | 512 MB (measured ~380 MB) |
 | Phoenix (profile observability) | 512 MB (measured ~500 MB) |
 | Prometheus + Grafana (profile observability) | 768 MB (measured ~320 MB) |
-| ArgoCD | 1.3 GB |
+| ArgoCD (profile gitops) | 1.3 GB (measured 204 MB, trimmed) |
 | **Total (core, steady state)** | **~13.7 GB** |
 | **Peak (during training)** | **up to WSL cap of 18 GB** |
 | **Headroom inside WSL at steady state** | **~4.3 GB** |
@@ -769,6 +778,7 @@ Work down the list; each step depends only on the ones above it. If a step fails
 | 11 | https://phoenix.ai.local | Phoenix projects `agent` and `litellm` with their traces (`observability` profile, [6.16](#616-observability-phoenix-prometheus-grafana)) | same → `302` |
 | 12 | https://grafana.ai.local | Grafana's *Platform overview* dashboard, signed in through the platform login | same → `302` |
 | 13 | https://n8n.ai.local | n8n: create its owner account once (second layer), then *Workflows* shows *Email triage* and *Daily briefing* (`automation` profile, [6.17](#617-automation-n8n)) | same → `302` |
+| 14 | https://argocd.ai.local | ArgoCD sign-in (user `admin`, `make argocd-password`), then the `platform` app: Synced, Healthy (`gitops` profile, [7](#7-cicd-and-gitops)) | same → `302` |
 
 Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a `404` comes from Traefik (no Ingress for that name: a typo, or not deployed yet); a certificate warning means `windows-trust-ca.ps1` hasn't run (`curl.exe` needs `--ssl-no-revoke`: Windows' TLS asks for a revocation check that a private CA can't answer; browsers don't); "can't reach this site" means the hosts entry is missing.
 
@@ -793,6 +803,7 @@ Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a 
 | Phoenix | https://phoenix.ai.local | `http://phoenix.observability.svc.cluster.local:6006` | UI, `/v1/traces` (OTLP HTTP), `/v1/projects` (REST) |
 | Prometheus | not exposed, see 10.3 | `http://prometheus.observability.svc.cluster.local:9090` | `/api/v1/query`, `/targets` |
 | Grafana | https://grafana.ai.local | `http://grafana.observability.svc.cluster.local:3000` | `/d/platform-overview` |
+| ArgoCD | https://argocd.ai.local | `http://argocd-server.argocd.svc.cluster.local` | UI, `/api/v1/applications` |
 | n8n | https://n8n.ai.local | `http://n8n.automation.svc.cluster.local:5678` | `/webhook/email-triage` (POST), `/webhook/daily-briefing` (GET) |
 
 LiteLLM has no API key (README §15), so any client on this PC can call it. For example, from PowerShell:
@@ -834,8 +845,10 @@ Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scrip
 | ![Authelia sign-in](docs/screenshots/auth.png) | ![BentoML](docs/screenshots/triage.png) |
 | **Grafana: Platform overview (memory, CPU, requests per UI)** | **Phoenix: traces for `agent` and `litellm`** |
 | ![Grafana](docs/screenshots/grafana.png) | ![Phoenix](docs/screenshots/phoenix.png) |
-| **n8n: owner account setup (second layer behind sign-on)** | |
-| ![n8n](docs/screenshots/n8n.png) | |
+| **n8n: owner account setup (second layer behind sign-on)** | **GitHub Actions: ci and build green** |
+| ![n8n](docs/screenshots/n8n.png) | ![GitHub Actions](docs/screenshots/actions.png) |
+| **ArgoCD sign-in (second layer behind sign-on)** | |
+| ![ArgoCD](docs/screenshots/argocd.png) | |
 
 ### 10.5 Planned (not deployed yet)
 
@@ -843,7 +856,6 @@ Their hosts entries already exist; until the service is deployed the URL returns
 
 | Service | URL | Week |
 |---|---|---|
-| ArgoCD | https://argocd.ai.local | 7 |
 
 ---
 
@@ -888,7 +900,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 4 | MLflow + Dagster + training | Model trained ✅ |
 | 5 | BentoML + agent integration | Model exposed as agent tool ✅ |
 | 6 | n8n + Phoenix + Prometheus/Grafana | Automation + traces ✅ |
-| 7 | ArgoCD + GitHub Actions | GitOps CI/CD |
+| 7 | ArgoCD + GitHub Actions | GitOps CI/CD ✅ |
 | 8 | Voice + OCR + docs + demo | Full platform |
 
 ### Definition of done per week
@@ -923,15 +935,14 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Ollama placement | **Decided:** WSL host (systemd), reached by pods at `http://ollama.llm.svc.cluster.local:11434`. Trade-off: ArgoCD doesn't manage Ollama; its settings live in [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh). The `10.42.0.1` address in `llm/ollama-host.yaml` assumes k3s's default pod network on a single node. |
 | Tracing footprint | **Decided:** Phoenix (~0.5 GB, one container + SQLite) instead of Langfuse v3 (~1.5–2 GB: web, worker, ClickHouse, Redis). Phoenix has no prompt management or annotation queues like Langfuse; traces, latency and token counts are covered. |
 | ArgoCD memory | 1.3 GB is significant; consider disabling Dex/notifications or using ArgoCD core mode. |
-| GHCR 500 MB limit | Applies to private packages; keep images small (slim bases, multi-stage builds) and run `cleanup.yml`. Public images are free. |
+| GHCR 500 MB limit | **Resolved:** images are public (the repo is), so no storage limit and no pull secret; `cleanup.yml` keeps 10 versions each. |
 | Voice/OCR tooling | Not yet specified — candidates: faster-whisper (STT), Piper (TTS), Tesseract / PaddleOCR (OCR). |
 | Email/Calendar access | Requires OAuth credentials for the chosen provider; store as Kubernetes Secrets. |
 | 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
-| Image sizes | `local-ai/mlflow` 1.3 GB and `local-ai/pipelines` 1.1 GB (MLflow, Dagster, scikit-learn, pandas), on top of `mcp-rag`. Fine locally; for GHCR in Week 7 keep them public or slim them (e.g. `mlflow-skinny` for the server isn't enough: it lacks the server). |
+| Image sizes | Our images total 3.6 GB on disk after the shared `ml-base` (5.1 GB before); `pipelines` (Dagster + Evidently) is still 1.8 GB. The k3s image store was 26 GB before `k3s crictl rmi --prune` (19 GB after, mostly third-party: Open WebUI, LiteLLM). |
 | Nightly training | Runs only if the platform is up at 02:00; missed nights aren't replayed. Same data + fixed seed give the same score, so the champion only changes when the data or the search space does. |
 | Single sign-on | **Resolved:** every UI is behind Authelia over HTTPS ([6.14](#614-single-sign-on-and-https-authelia)). One factor (password) for now; switch the rule to `two_factor` before exposing anything beyond this PC. The local CA's private key (`/var/lib/local-ai-ca`, root-only in WSL) can sign certificates your browser trusts: keep it there, and remove the CA with `windows-trust-ca.ps1 -Remove` if you retire the platform. |
-| RAG image size | `local-ai/mcp-rag` is ~600 MB (LlamaIndex pulls NumPy, NLTK, SQLAlchemy, Pillow), against ~80 MB for the other images. Public GHCR images have no size limit; keep it public, or slim it before Week 7 if it must be private. |
 | RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |
 | WSL networking | **Resolved:** Traefik listens on the WSL host's ports; hosts entries point at `127.0.0.1`, which Windows port proxies forward to the `[::1]` WSL relay ([6.7](#67-local-dns-for-local-hostnames)), so neither a changing WSL IP nor a network without IPv6 matters. Needs WSL's default NAT mode with `localhostForwarding=true` and the IP Helper service. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |

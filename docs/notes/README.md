@@ -12,6 +12,7 @@ decisions and why, and what was measured. The README has the full how-to; these 
 | — | [Platform: Headlamp, single sign-on, HTTPS, profiles](platform.md) | ✅ |
 | 5 | [Model serving (BentoML) as an agent tool, drift (Evidently)](week-05.md) | ✅ |
 | 6 | [Automation and observability: n8n, Phoenix, Prometheus, Grafana](week-06.md) | ✅ |
+| 7 | [GitOps CI/CD: GitHub Actions, GHCR, ArgoCD](week-07.md) | ✅ |
 
 Machine-specific changes (what ran on this laptop, how to undo it) go in `docs/DEVICE_LOG.md`,
 which stays local.
