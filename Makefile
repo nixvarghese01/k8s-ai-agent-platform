@@ -2,7 +2,7 @@
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 
-.PHONY: argocd argocd-password profile set-login up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
+.PHONY: e2e argocd argocd-password profile set-login up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
 
 up:        ## start Ollama + k3s and wait until every pod is Ready
 	bash infra/scripts/platform.sh up
@@ -22,6 +22,9 @@ local-down: down  ## alias of down, same name as .\local-down on Windows
 
 restart:   ## down, then up (fresh pods)
 	bash infra/scripts/platform.sh restart
+
+e2e:       ## end-to-end check of every feature through its real interface (all profiles on)
+	bash infra/scripts/e2e.sh
 
 status:    ## health check of services, pods, models, ingress
 	bash infra/scripts/status.sh

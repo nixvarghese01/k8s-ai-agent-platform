@@ -166,12 +166,15 @@ spec:
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10
+            timeoutSeconds: 5 # default 1 s; slow while the models keep the CPU busy
           livenessProbe:
             httpGet:
               path: /api/health
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
       volumes:
         - name: data
           persistentVolumeClaim:
