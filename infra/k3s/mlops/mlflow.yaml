@@ -22,8 +22,8 @@ spec:
     spec:
       containers:
         - name: mlflow
-          image: local-ai/mlflow:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-mlflow:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:42fe428ebdeb60200d2ecd397d4f44457d2920c92af1e4b204e972cb3f53fcb2
+          imagePullPolicy: IfNotPresent
           args:
             - mlflow
             - server

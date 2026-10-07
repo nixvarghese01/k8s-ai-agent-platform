@@ -38,8 +38,8 @@ spec:
     spec:
       containers:
         - name: mcp-rag
-          image: local-ai/mcp-rag:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-mcp-rag:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:8d611dffd44479f904a8cd0d7d9275ac942d30692dd2cf86e773afa072333737
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000
@@ -115,8 +115,8 @@ spec:
           restartPolicy: Never
           containers:
             - name: rag-index
-              image: local-ai/mcp-rag:dev
-              imagePullPolicy: Never
+              image: ghcr.io/nixvarghese01/local-ai-mcp-rag:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:8d611dffd44479f904a8cd0d7d9275ac942d30692dd2cf86e773afa072333737
+              imagePullPolicy: IfNotPresent
               command: ["python", "rag_index.py"]
               envFrom:
                 - configMapRef:

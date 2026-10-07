@@ -19,8 +19,8 @@ spec:
     spec:
       containers:
         - name: agent-ui
-          image: local-ai/agent-ui:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-agent-ui:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:5b0028b6bd6a5d77c2b8a83ac3978cb3774ba2e9a61bbb175849276fa2616fef
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8501

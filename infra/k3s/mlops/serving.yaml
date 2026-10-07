@@ -25,8 +25,8 @@ spec:
     spec:
       containers:
         - name: triage
-          image: local-ai/serving:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-serving:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:b8d49e9c6851259429794e61e51b5343ce911cc9b36a3d47f0dcdc27272a90fb
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 3000

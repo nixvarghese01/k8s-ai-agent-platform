@@ -35,8 +35,8 @@ spec:
     spec:
       containers:
         - name: dagster-webserver
-          image: local-ai/pipelines:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-pipelines:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:e129acf1fb717ab95e689d12542b46a12b3e3f6e18d09e40ee6b2bd7dd8e0d0c
+          imagePullPolicy: IfNotPresent
           args: ["dagster-webserver", "-h", "0.0.0.0", "-p", "3000", "-w", "workspace.yaml"]
           ports:
             - name: http
@@ -99,8 +99,8 @@ spec:
     spec:
       containers:
         - name: dagster-daemon
-          image: local-ai/pipelines:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-pipelines:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:e129acf1fb717ab95e689d12542b46a12b3e3f6e18d09e40ee6b2bd7dd8e0d0c
+          imagePullPolicy: IfNotPresent
           args: ["dagster-daemon", "run", "-w", "workspace.yaml"]
           env:
             - name: DAGSTER_DB_PASSWORD

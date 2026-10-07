@@ -22,8 +22,8 @@ spec:
     spec:
       containers:
         - name: mcp-filesystem
-          image: local-ai/mcp-filesystem:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-mcp-filesystem:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:358c39e6964c52eafdec8eecb89753dee9aad5902b462d9600742f8ae7ab35b5
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000
@@ -99,8 +99,8 @@ spec:
     spec:
       containers:
         - name: agent
-          image: local-ai/agent:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-agent:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:c852ebe49ae549ca939b5a0cbd8c3e4d2120c1d827cb8fb39d26f4c885fa1cda
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000
@@ -177,8 +177,8 @@ spec:
     spec:
       containers:
         - name: mcp-triage
-          image: local-ai/mcp-triage:dev
-          imagePullPolicy: Never
+          image: ghcr.io/nixvarghese01/local-ai-mcp-triage:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:770fbb438d60c9b4c27e016fd2761d17d75582d233e69f24c930120f2d79e76e
+          imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000
