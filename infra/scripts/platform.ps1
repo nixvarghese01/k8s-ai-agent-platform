@@ -1,6 +1,8 @@
 # Start/stop the whole platform from Windows (PowerShell, Git Bash via `powershell -File`, VS Code).
 #
-#   .\infra\scripts\platform.ps1 up [-Docker]     start Ollama + k3s (+ Docker), wait for pods
+#   .\infra\scripts\platform.ps1 up [-Docker] [-Profile mlops,observability]  start Ollama + k3s (+ Docker)
+#                                                 with the core + profiles (default: last time's)
+#   .\infra\scripts\platform.ps1 profile mlops   switch profiles while running (`core` = only the core)
 #   .\infra\scripts\platform.ps1 down [-KeepWsl]  stop everything, then shut Ubuntu down to free its RAM
 #   .\infra\scripts\platform.ps1 status
 #   .\infra\scripts\platform.ps1 restart [-Docker] [-KeepWsl]  down, then up: a full cold restart
@@ -9,7 +11,8 @@
 #
 # `down` without -KeepWsl closes any open Ubuntu terminals too.
 param(
-    [Parameter(Mandatory, Position = 0)][ValidateSet('up', 'down', 'status', 'restart', 'headlamp-token', 'set-login')][string]$Action,
+    [Parameter(Mandatory, Position = 0)][ValidateSet('up', 'down', 'status', 'restart', 'headlamp-token', 'set-login', 'profile')][string]$Action,
+    [Parameter(Position = 1)][string]$Profile,
     [switch]$Docker,
     [switch]$KeepWsl
 )
@@ -26,6 +29,7 @@ function Invoke-Platform([string[]]$ArgList) {
 }
 
 $extra = @(); if ($Docker) { $extra += '--docker' }
+if ($Profile -and $Action -ne 'profile') { $extra += @('--profile', $Profile) }
 
 switch ($Action) {
     'up' { Invoke-Platform (@('up') + $extra) }
@@ -40,6 +44,10 @@ switch ($Action) {
         Invoke-Platform (@('up') + $extra)
     }
     'status' { wsl -d $distro -- bash "$here/status.sh" }
+    'profile' {
+        if (-not $Profile) { wsl -d $distro -u root -- bash "$here/profiles.sh"; return }
+        Invoke-Platform @('profile', $Profile)
+    }
     'headlamp-token' {
         # As root, so no Ubuntu password is needed; the token is cluster-admin (ui/headlamp.yaml)
         $token = wsl -d $distro -u root -- sh -c "kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d"

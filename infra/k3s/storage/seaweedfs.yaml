@@ -22,8 +22,9 @@ metadata:
   namespace: storage
   labels:
     app: seaweedfs
+    local-ai/profile: mlops # off unless the mlops profile is on (scripts/profiles.sh)
 spec:
-  replicas: 1
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
   strategy:
     type: Recreate
   selector:

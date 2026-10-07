@@ -183,6 +183,7 @@ local-ai-platform/
 │       ├── screenshots.ps1 # capture the UIs into docs/screenshots/ (README 10.4)
 │       ├── rag-index.sh    # run the RAG indexer now (make rag-index)
 │       ├── set-login.sh    # choose the single sign-on username + password
+│       ├── profiles.sh     # on-demand profiles: mlops, observability, automation, voice (6.6)
 │       └── status.sh
 ├── agent/                  # LangGraph agent (6.10)
 │   ├── Dockerfile
@@ -364,6 +365,24 @@ After [`05-on-demand-services.sh`](infra/scripts/host/05-on-demand-services.sh) 
 | `.\local-down` (or `.\infra\scripts\platform.ps1 down`) | `make local-down` / `make down` | Stop all pods cleanly (`k3s-killall.sh`), then k3s, Ollama, Docker. From Windows it also shuts Ubuntu down to free its RAM (skip with `-KeepWsl`; this closes open Ubuntu terminals) |
 | `.\infra\scripts\platform.ps1 restart` | `make restart` | `down` then `up` in one go. From Windows Ubuntu is shut down in between too (skip with `-KeepWsl`), so it's a full cold restart with fresh pods |
 | `.\infra\scripts\platform.ps1 status` | `make status` | Health check: services, pods since this start, models, LiteLLM chat + embedding, Qdrant, ingress |
+
+**Profiles: run only what you need.** The core (chat, agent, document search, sign-on, Headlamp) always runs. Everything else belongs to a profile and runs only while that profile is on; off means scaled to 0, so it takes no RAM or CPU, and its data stays on its volume. Measured 2026-10-07: core only uses **3.4 GB** in WSL (pods 1.8 GB), core + mlops 4.9 GB.
+
+| Profile | Runs | Turn on when |
+|---|---|---|
+| (core) | Open WebUI, LiteLLM, Qdrant, agent + MCP servers, RAG index, Authelia, Headlamp | always |
+| `mlops` | Postgres, SeaweedFS, MLflow, Dagster, model serving (Week 5) | training, model work; the 02:00 training only runs if it's on |
+| `observability` | tracing and metrics (Week 6) | debugging, measuring latency |
+| `automation` | n8n (Week 6) | scheduled workflows |
+| `voice` | speech-to-text, text-to-speech (Week 8) | talking to the agent |
+
+| From Windows | Inside Ubuntu | What it does |
+|---|---|---|
+| `.\local-up -Profile mlops,observability` | `bash infra/scripts/platform.sh up --profile mlops,observability` | Start with these profiles (they're remembered; plain `.\local-up` reuses them) |
+| `.\infra\scripts\platform.ps1 profile mlops` | `make profile P=mlops` | Switch while running (~40 s for mlops); `core` turns every profile off |
+| `.\infra\scripts\platform.ps1 profile` | `bash infra/scripts/profiles.sh` | Show what's on |
+
+A switched-off UI answers `503` (after sign-in). [`profiles.sh`](infra/scripts/profiles.sh) finds optional Deployments by their `local-ai/profile` label; those manifests leave `replicas` out, so `make deploy` (and ArgoCD later) don't switch them back on.
 
 Scripts only start and stop services; what runs inside k3s comes from the manifests. Run [`windows-wsl-idle.ps1`](infra/scripts/host/windows-wsl-idle.ps1) once (then `wsl --shutdown`): without `instanceIdleTimeout=-1` / `vmIdleTimeout=-1`, WSL shuts Ubuntu down ~30 s after the last terminal closes, taking k3s with it.
 

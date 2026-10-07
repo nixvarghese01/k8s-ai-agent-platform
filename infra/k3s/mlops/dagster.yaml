@@ -21,8 +21,9 @@ metadata:
   namespace: mlops
   labels:
     app: dagster-webserver
+    local-ai/profile: mlops # off unless the mlops profile is on (scripts/profiles.sh)
 spec:
-  replicas: 1
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
   selector:
     matchLabels:
       app: dagster-webserver
@@ -82,8 +83,9 @@ metadata:
   namespace: mlops
   labels:
     app: dagster-daemon
+    local-ai/profile: mlops # off unless the mlops profile is on (scripts/profiles.sh)
 spec:
-  replicas: 1
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
   strategy:
     type: Recreate # never two daemons on one instance
   selector:

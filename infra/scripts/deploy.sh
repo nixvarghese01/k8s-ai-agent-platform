@@ -78,4 +78,6 @@ kubectl -n ui rollout status deploy/agent-ui --timeout=5m
 kubectl -n mlops rollout status deploy/mlflow --timeout=5m
 kubectl -n mlops rollout status deploy/dagster-webserver --timeout=5m
 kubectl -n mlops rollout status deploy/dagster-daemon --timeout=5m
+# `apply` may have started optional services again: keep only the active profiles running
+bash infra/scripts/profiles.sh apply
 kubectl get pods,pvc,ingress -A --field-selector metadata.namespace!=kube-system

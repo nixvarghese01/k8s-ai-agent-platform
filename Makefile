@@ -2,12 +2,15 @@
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 
-.PHONY: set-login up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
+.PHONY: profile set-login up local-up up-docker down local-down restart status deploy images test llm-reload rag-index train s3-credentials headlamp-token teardown
 
 up:        ## start Ollama + k3s and wait until every pod is Ready
 	bash infra/scripts/platform.sh up
 
 local-up: up  ## alias of up, same name as .\local-up on Windows
+
+profile:   ## switch optional services: make profile P=mlops,observability (P=core: only the core)
+	bash infra/scripts/profiles.sh set $(P)
 
 up-docker: ## same as up, plus Docker
 	bash infra/scripts/platform.sh up --docker
