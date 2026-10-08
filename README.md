@@ -472,6 +472,8 @@ A model without tool calling can't be picked for the Agent. The agent's prompts 
 | v1 (2026-10-08), model-made plan for multi-step requests | 6/6 | 15/16 | 4/4 | 4.3 s |
 | v2 (2026-10-08), multi-step requests split into parts (6.19) | 6/6 | 16/16 | 4/4 | 4.1 s |
 
+**Who changed what, and back.** Every apply, revert, download, delete and evaluation is recorded: when, who (the signed-in user from Authelia's `Remote-User` header; `cli:<user>` from `model.sh`), the models before and after. The last 50 entries are in the same ConfigMap and on the Models page under **History**, and each is also a JSON line in `kubectl -n ui logs deploy/agent-ui`. **Revert to previous** goes back to the models before the change that led to the current ones (again = undo the revert); from a terminal `model.sh history` and `model.sh revert` (`platform.ps1 model history|revert`). Writes carry the ConfigMap's `resourceVersion` and retry on a conflict, so an evaluation saving while a model is applied can't overwrite the change, or the other way round. Anyone with `kubectl` can still edit that ConfigMap, so it's an operations record, not a tamper-proof audit log.
+
 **Introducing a new model:** download it on the Models page (it shows expected RAM, speed and fit first), apply it to one use case, evaluate, compare with the best score, and keep it or switch back. Change `golden.yaml` deliberately and bump its `version`: scores compare only within one version.
 
 Every new service should use the OpenAI client with `base_url=http://litellm.llm.svc.cluster.local:4000/v1`, any API key and an alias, never an Ollama URL or model name. Then changing a model is one line in one file.

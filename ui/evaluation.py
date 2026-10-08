@@ -159,10 +159,7 @@ def history(kube: models.Kube) -> list[dict]:
 
 
 def save(kube: models.Kube, summary: dict) -> None:
-    data = kube._data()
-    evals = json.loads(data.get("evals") or "[]")
-    data["evals"] = json.dumps((evals + [summary])[-KEEP:])
-    kube._write(data)
+    kube.update(lambda d: d | {"evals": json.dumps((json.loads(d.get("evals") or "[]") + [summary])[-KEEP:])})
 
 
 def best(evals: list[dict], use_case: str, version: int) -> dict | None:

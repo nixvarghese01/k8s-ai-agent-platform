@@ -15,6 +15,10 @@ Ollama runs). A loaded model's RAM is what Ollama reports; otherwise it's estima
 file size plus the 8K context. Speed is measured once per model (tokens/s, stored in the
 ConfigMap) and estimated from the measured ones until then: on a CPU it scales with model size.
 
+Audit trail (issue #30): every apply, revert, download and delete is recorded with the
+signed-in user (Authelia's Remote-User header) in the same ConfigMap (key "history", last 50)
+and in the pod's log; "revert" goes back to the models before the last change.
+
 Kubernetes access: the ui/agent-ui ServiceAccount may read/write that one ConfigMap and
 restart the litellm Deployment, nothing else (ui/agent-ui.yaml).
 """
@@ -24,6 +28,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -36,6 +41,7 @@ DEFAULT_MODEL = "qwen2.5:3b"  # what LiteLLM uses until a model is chosen (llm/l
 EMBED_PREFIX = "nomic-embed-text"  # the document-search embeddings; never switched or deleted here
 NUM_CTX = 8192  # same as litellm.yaml, so the speed test doesn't reload the model
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:-]{0,120}$")
+LOCAL_TZ = ZoneInfo(os.environ.get("AGENT_TZ", "Asia/Dubai"))  # times in the audit trail
 HEADROOM_GB = 1.0  # left free for everything else; below it a model is "tight"
 ANSWER_TOKENS = 150  # a short answer, for "~N s per answer"
 
@@ -65,19 +71,34 @@ class Kube:
         self.client = httpx.Client(base_url=base, headers={"Authorization": f"Bearer {token}"},
                                    verify=verify, timeout=15, transport=transport)
 
-    def _data(self) -> dict:
+    def _get(self) -> tuple[dict, str | None]:
+        """The ConfigMap's data and its resourceVersion (None if it doesn't exist yet)."""
         r = self.client.get(f"/api/v1/namespaces/{NS}/configmaps/{CONFIGMAP}")
         if r.status_code == 404:
-            return {}
+            return {}, None
         r.raise_for_status()
-        return r.json().get("data") or {}
+        return r.json().get("data") or {}, r.json()["metadata"]["resourceVersion"]
 
-    def _write(self, data: dict) -> None:
-        body = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": {"name": CONFIGMAP, "namespace": NS}, "data": data}
-        r = self.client.put(f"/api/v1/namespaces/{NS}/configmaps/{CONFIGMAP}", json=body)
-        if r.status_code == 404:
-            r = self.client.post(f"/api/v1/namespaces/{NS}/configmaps", json=body)
-        r.raise_for_status()
+    def _data(self) -> dict:
+        return self._get()[0]
+
+    def update(self, change) -> dict:
+        """Read the ConfigMap, apply change(data) -> data, write it back. The write carries the
+        resourceVersion it read, so a concurrent writer (an evaluation saving while a model is
+        applied) makes Kubernetes answer 409 and this tries again, instead of one overwriting
+        the other."""
+        for _ in range(5):
+            data, version = self._get()
+            new = change(dict(data))
+            meta = {"name": CONFIGMAP, "namespace": NS} | ({"resourceVersion": version} if version else {})
+            body = {"apiVersion": "v1", "kind": "ConfigMap", "metadata": meta, "data": new}
+            r = (self.client.put(f"/api/v1/namespaces/{NS}/configmaps/{CONFIGMAP}", json=body) if version
+                 else self.client.post(f"/api/v1/namespaces/{NS}/configmaps", json=body))
+            if r.status_code == 409:  # changed (or created) since we read it
+                continue
+            r.raise_for_status()
+            return new
+        raise RuntimeError(f"ConfigMap {NS}/{CONFIGMAP} kept changing; try again")
 
     def choice(self) -> dict[str, str]:
         """The model of each use case; agent and e-mail fall back to chat's."""
@@ -89,12 +110,13 @@ class Kube:
         return self.choice()["chat"]
 
     def set_choice(self, choice: dict[str, str]) -> None:
-        data = self._data()
-        for uc, (_, key, _, _) in USE_CASES.items():
-            if uc in choice:
-                # agent/e-mail equal to chat are stored as "", so they follow chat's next change
-                data[key] = choice[uc] if uc == "chat" or choice[uc] != choice.get("chat", data.get("model")) else ""
-        self._write(data)
+        def change(data):
+            for uc, (_, key, _, _) in USE_CASES.items():
+                if uc in choice:
+                    # agent/e-mail equal to chat are stored as "", so they follow chat's next change
+                    data[key] = choice[uc] if uc == "chat" or choice[uc] != choice.get("chat", data.get("model")) else ""
+            return data
+        self.update(change)
 
     def set_active(self, model: str) -> None:
         """Every use case on one model."""
@@ -107,11 +129,11 @@ class Kube:
             return {}
 
     def save_speed(self, model: str, tps: float) -> None:
-        data = self._data()
-        speeds = json.loads(data.get("speeds") or "{}")
-        speeds[model] = round(tps, 1)
-        data["speeds"] = json.dumps(speeds, sort_keys=True)
-        self._write(data)
+        def change(data):
+            speeds = json.loads(data.get("speeds") or "{}")
+            speeds[model] = round(tps, 1)
+            return data | {"speeds": json.dumps(speeds, sort_keys=True)}
+        self.update(change)
 
     def restart_litellm(self) -> None:
         """What `kubectl rollout restart` does: a new pod-template annotation."""
@@ -251,6 +273,43 @@ def apply(kube: Kube, choice: dict[str, str]) -> list[str]:
 def switch(kube: Kube, name: str) -> list[str]:
     """Every use case on `name`; returns the models unloaded from RAM."""
     return apply(kube, {uc: name for uc in USE_CASES})
+
+
+# ---- audit trail and rollback (issue #30) --------------------------------------------------
+HISTORY_KEEP = 50  # entries kept in the ConfigMap (key "history"); each is also logged to stdout
+
+
+def record(kube: Kube, action: str, by: str, before: dict | None = None, after: dict | None = None,
+           note: str = "") -> dict:
+    """Add an entry to the audit trail: apply, revert, download or delete, by whom, from what to what."""
+    entry = {"at": datetime.now(LOCAL_TZ).strftime("%Y-%m-%d %H:%M:%S"), "by": by or "unknown", "action": action,
+             "before": before, "after": after, "note": note}
+    print(json.dumps({"audit": entry}), flush=True)  # in `kubectl -n ui logs deploy/agent-ui` too
+    kube.update(lambda d: d | {"history": json.dumps((json.loads(d.get("history") or "[]") + [entry])[-HISTORY_KEEP:])})
+    return entry
+
+
+def audit_log(kube: Kube) -> list[dict]:
+    try:
+        return json.loads(kube._data().get("history") or "[]")
+    except ValueError:
+        return []
+
+
+def previous(entries: list[dict], current: dict) -> dict | None:
+    """What to revert to: the models before the change that led to the current ones."""
+    for e in reversed(entries):
+        if e["action"] in ("apply", "revert") and e.get("after") == current and e.get("before"):
+            return e["before"]
+    return None
+
+
+def summary(choice: dict | None) -> str:
+    if not choice:
+        return ""
+    if len(set(choice.values())) == 1:
+        return f"{next(iter(choice.values()))} everywhere"
+    return " · ".join(f"{uc} {m}" for uc, m in choice.items())
 
 
 def speed_test(model: str) -> tuple[float, float]:

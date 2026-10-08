@@ -8,7 +8,7 @@
 #   .\infra\scripts\platform.ps1 restart [-Docker] [-KeepWsl]  down, then up: a full cold restart
 #   .\infra\scripts\platform.ps1 headlamp-token  copy the Headlamp login token to the clipboard
 #   .\infra\scripts\platform.ps1 set-login       choose the single sign-on username + password
-#   .\infra\scripts\platform.ps1 model [use <name> [chat|agent|email] | remove <name>]  the model of
+#   .\infra\scripts\platform.ps1 model [use <name> [chat|agent|email] | revert | history | remove <name>]  the model of
 #                                                 each use case (or the Models page at https://agent.ai.local)
 #
 # `down` without -KeepWsl closes any open Ubuntu terminals too.
