@@ -2,10 +2,10 @@
 #   In-cluster: http://litellm.llm.svc.cluster.local:4000/v1   API docs: https://llm.ai.local/
 # Clients (Open WebUI, the agent, n8n) ask for an alias such as `chat-default`; the
 # model_list below maps each alias to a real model.
-# One chat model at a time: both chat aliases use the ACTIVE model (__CHAT_MODEL__ below),
-# which lives in ConfigMap llm/llm-model, not in Git, so ArgoCD keeps your choice. Switch with
+# A model per use case, chosen on the Models page (https://agent.ai.local) or with
 #   .\infra\scripts\platform.ps1 model use qwen3:4b     (or: make model M=qwen3:4b)
-# which pulls it, restarts LiteLLM and unloads the previous one (README §6.9).
+# The choice lives in ConfigMap llm/llm-model, not in Git, so ArgoCD keeps it; LiteLLM fills
+# __CHAT_MODEL__ / __AGENT_MODEL__ / __EMAIL_MODEL__ below in on start (README §6.9).
 # No master key and no database: the API is reachable only from this PC (WSL NAT), and
 # config comes from this file alone.
 apiVersion: v1
@@ -16,8 +16,8 @@ metadata:
 data:
   config.yaml: |
     model_list:
-      # Chat (Open WebUI, n8n) and tool calling (the agent): the same active model, with the
-      # same num_ctx, so Ollama keeps one copy loaded instead of reloading between them.
+      # Chat (Open WebUI), the agent (tool calling) and e-mail triage (n8n). All use the same
+      # num_ctx, so when two use cases share a model Ollama keeps one copy instead of reloading.
       # num_ctx: room for tool results (Ollama's default is smaller).
       - model_name: chat-default
         litellm_params:
@@ -26,7 +26,12 @@ data:
           num_ctx: 8192
       - model_name: chat-tools
         litellm_params:
-          model: ollama_chat/__CHAT_MODEL__
+          model: ollama_chat/__AGENT_MODEL__
+          api_base: http://ollama.llm.svc.cluster.local:11434
+          num_ctx: 8192
+      - model_name: chat-email
+        litellm_params:
+          model: ollama_chat/__EMAIL_MODEL__
           api_base: http://ollama.llm.svc.cluster.local:11434
           num_ctx: 8192
 
@@ -87,20 +92,36 @@ spec:
           # Pinned release (same digest main-stable had when verified, 2026-10-02).
           # To upgrade: pick a newer vX.Y.Z tag, apply, then run `make status`.
           image: ghcr.io/berriai/litellm:v1.103.1@sha256:df15400b5b80925c45d3fd53f8f7a6c0eaa8a25a86833e1b358002e129018943
-          # Fill in the active model, then start LiteLLM as the image would
+          # Fill in each use case's model (agent and e-mail default to chat's), then start
+          # LiteLLM as the image would
           command: ["sh", "-c"]
           args:
-            - sed "s|__CHAT_MODEL__|${CHAT_MODEL:-qwen2.5:3b}|g" /app/config.template.yaml > /tmp/config.yaml &&
+            - C=${CHAT_MODEL:-qwen2.5:3b};
+              sed -e "s|__CHAT_MODEL__|$C|g" -e "s|__AGENT_MODEL__|${AGENT_MODEL:-$C}|g" -e "s|__EMAIL_MODEL__|${EMAIL_MODEL:-$C}|g"
+              /app/config.template.yaml > /tmp/config.yaml &&
               exec litellm --config /tmp/config.yaml --port 4000 --num_workers 1
           ports:
             - name: http
               containerPort: 4000
           env:
-            - name: CHAT_MODEL # the active chat model (model.sh); qwen2.5:3b until one is chosen
+            # The model of each use case (Models page / model.sh); unset = qwen2.5:3b / chat's
+            - name: CHAT_MODEL
               valueFrom:
                 configMapKeyRef:
                   name: llm-model
                   key: model
+                  optional: true
+            - name: AGENT_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-model
+                  key: agent
+                  optional: true
+            - name: EMAIL_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-model
+                  key: email
                   optional: true
             - name: PHOENIX_COLLECTOR_HTTP_ENDPOINT
               value: http://phoenix.observability.svc.cluster.local:6006/v1/traces

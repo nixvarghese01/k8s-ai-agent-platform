@@ -1,4 +1,4 @@
-"""Models page: which chat model runs, switch to another, download or delete one."""
+"""Models page: which model each use case runs, whether it fits this laptop, downloads."""
 
 import time
 
@@ -8,86 +8,155 @@ import streamlit as st
 import models
 
 st.title("Models")
-st.caption("One chat model runs at a time: chat, the agent and n8n all use it. The embedding model for "
-           "document search stays loaded next to it.")
+st.caption("Pick a model for each use case. Same model everywhere = one model in RAM; different ones swap "
+           "(Ollama keeps at most 2 loaded). The embedding model for document search stays as it is.")
 
 try:
     kube = models.Kube()
-    active = kube.active()
+    choice = kube.choice()
+    speeds = kube.speeds()
     have = models.installed()
     loaded = models.in_memory()
+    sysinfo = models.system()
 except Exception as e:
     st.error(f"Can't reach Ollama or Kubernetes: {e}")
     st.stop()
 
 chat_models = [m for m in have if not models.is_embedding(m["name"])]
-st.metric("Active model", active, help="Used by chat-default (Open WebUI, n8n) and chat-tools (the agent)")
-if active not in {m["name"] for m in have}:
-    st.warning(f"`{active}` isn't downloaded: download it below or switch to another.")
+sizes = {m["name"]: m["gb"] for m in chat_models}
+caps = {m["name"]: models.capabilities(m["name"]) for m in chat_models}
+# RAM each model takes: what Ollama reports while it's loaded, else the estimate
+ram = {n: loaded.get(n) or models.expected_ram_gb(gb) for n, gb in sizes.items()}
+freeable = sum(gb for m, gb in loaded.items() if not models.is_embedding(m))
+free_gb = sysinfo["available_gb"] + freeable  # if every chat model were unloaded
+
+
+def speed_of(name: str) -> tuple[float | None, bool]:
+    return models.expected_speed(name, sizes.get(name, 0), speeds, sizes)
+
+
+def describe(name: str) -> str:
+    tps, measured = speed_of(name)
+    fit = models.verdict(ram[name], free_gb)
+    speed = f"{tps} tok/s{'' if measured else ' (est.)'}" if tps else "speed not measured"
+    return f"{models.ICON[fit]} {name} · ~{ram[name]} GB RAM · {speed}"
+
 
 for key in ("done", "error"):  # messages from the action before the last rerun
     if msg := st.session_state.pop(key, None):
         (st.success if key == "done" else st.error)(msg)
 
+# ---- sidebar: the laptop -------------------------------------------------------------------
+with st.sidebar:
+    st.subheader("This laptop (WSL)")
+    st.progress(sysinfo["used_gb"] / sysinfo["total_gb"],
+                text=f"RAM {sysinfo['used_gb']} of {sysinfo['total_gb']} GB used · {sysinfo['available_gb']} GB free")
+    st.progress(sysinfo["cpu_pct"] / 100, text=f"CPU load {sysinfo['load']} on {sysinfo['cpus']} cores ({sysinfo['cpu_pct']}%)")
+    st.caption("Ollama may use at most 4 cores (thermal cap, README §12).")
+    st.markdown("**In RAM now**")
+    for name, gb in sorted(loaded.items()):
+        st.caption(f"● {name}: {gb} GB" + (" (document search)" if models.is_embedding(name) else ""))
+    if not loaded:
+        st.caption("nothing (models load on first use, unload after 5 min idle)")
+    st.caption(f"Free for a chat model: **{free_gb:.1f} GB** (free RAM + chat models that would be unloaded), "
+               f"keeping {models.HEADROOM_GB:.0f} GB spare.")
+    if st.button("Refresh"):
+        st.rerun()
 
-def do_switch(name: str):
-    with st.status(f"Switching to {name}…", expanded=True) as status:
-        if "tools" not in models.capabilities(name):
-            st.warning(f"{name} can't call tools: chat works, but the agent's file, calendar and web steps won't.")
-        freed = models.switch(kube, name)
-        st.write("Restarting the LLM gateway (LiteLLM)…")
-        for _ in range(90):
-            if kube.litellm_ready():
-                break
-            time.sleep(2)
-        if freed:
-            st.write("Freed from RAM: " + ", ".join(freed))
-        st.write(f"Loading {name} and asking it one question…")
-        reply, seconds = models.smoke_test()
-        status.update(label=f"{name} is active", state="complete")
-    st.session_state.done = f"{name} is active. First answer: “{reply[:60]}” in {seconds} s (includes loading it)."
+# ---- a model for each use case -------------------------------------------------------------
+st.subheader("Model for each use case")
+picked = {}
+for uc, (label, _, alias, needs_tools) in models.USE_CASES.items():
+    options = [n for n in sizes if not needs_tools or "tools" in caps[n]]
+    current = choice[uc] if choice[uc] in options else (options[0] if options else None)
+    picked[uc] = st.selectbox(label, options, index=options.index(current) if current else None, format_func=describe,
+                              key=f"uc-{uc}", help=f"LiteLLM alias `{alias}`" + (" · tool-calling models only" if needs_tools else ""))
+    if choice[uc] not in sizes:
+        st.warning(f"`{choice[uc]}` is set for this but isn't downloaded.")
 
+if all(picked.values()):
+    plan = models.plan_fit(picked, ram, loaded, sysinfo["available_gb"])
+    text = (f"**{len(plan['models'])} model{'s' if len(plan['models']) > 1 else ''}** ({', '.join(plan['models'])}): "
+            f"needs ~{plan['need_gb']} GB, {plan['free_gb']} GB free after unloading the current ones.")
+    {"fits": st.success, "tight": st.warning, "too big": st.error}[plan["verdict"]](
+        f"{models.ICON[plan['verdict']]} {text} " + {"fits": "Fits.", "tight": "Tight: it may run out of memory when other "
+        "services are busy.", "too big": "Too big: Ollama would fail to load it or WSL would start swapping."}[plan["verdict"]])
+    if plan["swaps"]:
+        st.info("Different models per use case: going from one use case to another reloads a model (+10–25 s).")
+    rows = []
+    for uc, (label, _, _, _) in models.USE_CASES.items():
+        tps, measured = speed_of(picked[uc])
+        rows.append({"Use case": label, "Model": picked[uc],
+                     "Expected answer": f"~{round(models.ANSWER_TOKENS / tps)} s" + ("" if measured else " (est.)") if tps else "?"})
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+    st.caption(f"Expected answer: generating ~{models.ANSWER_TOKENS} tokens; tool steps and long prompts add to it.")
 
-# ---- downloaded models -------------------------------------------------------------------
+    changed = any(picked[uc] != choice[uc] for uc in models.USE_CASES)
+    anyway = plan["verdict"] != "too big" or st.checkbox("Apply anyway")
+    if st.button("Apply", type="primary", disabled=not (changed and anyway)):
+        try:
+            with st.status("Applying…", expanded=True) as status:
+                freed = models.apply(kube, picked)
+                st.write("Restarting the LLM gateway (LiteLLM)…")
+                for _ in range(90):
+                    if kube.litellm_ready():
+                        break
+                    time.sleep(2)
+                if freed:
+                    st.write("Freed from RAM: " + ", ".join(freed))
+                results = []
+                for m in plan["models"]:
+                    st.write(f"Loading {m} and measuring its speed…")
+                    tps, secs = models.speed_test(m)
+                    kube.save_speed(m, tps)
+                    results.append(f"{m}: {tps} tok/s (first answer {secs} s incl. loading)")
+                reply, _ = models.smoke_test("chat-tools")
+                status.update(label="Applied", state="complete")
+            st.session_state.done = "Applied. " + "; ".join(results) + f". Agent alias answers: “{reply[:30]}”."
+        except Exception as e:
+            st.session_state.error = f"Applying failed: {e}"
+        st.rerun()
+
+# ---- downloaded models ---------------------------------------------------------------------
 st.subheader("Downloaded")
 rows = []
-for m in chat_models:
-    caps = models.capabilities(m["name"])
-    rows.append({"Model": m["name"], "Size (GB)": m["gb"], "Parameters": m["params"], "Quantization": m["quant"],
-                 "Tool calling": "✅" if "tools" in caps else "—", "In RAM": "●" if m["name"] in loaded else "",
-                 "Active": "✅" if m["name"] == active else ""})
+for n, gb in sizes.items():
+    tps, measured = speed_of(n)
+    used_for = [models.USE_CASES[uc][0].split(" ")[0].rstrip(":") for uc in models.USE_CASES if choice[uc] == n]
+    rows.append({"Model": n, "Download (GB)": gb, "RAM (GB)": f"{ram[n]}" + ("" if n in loaded else " (est.)"),
+                 "Speed (tok/s)": (f"{tps}" + ("" if measured else " (est.)")) if tps else "—",
+                 "Fits": models.ICON[models.verdict(ram[n], free_gb)], "Tool calling": "✅" if "tools" in caps[n] else "—",
+                 "Used for": ", ".join(used_for), "In RAM": "●" if n in loaded else ""})
 st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
-others = [m["name"] for m in chat_models if m["name"] != active]
-col1, col2 = st.columns(2)
-with col1:
-    pick = st.selectbox("Switch to", others, index=None, placeholder="choose a model")
-    if st.button("Use this model", type="primary", disabled=not pick):
-        try:
-            do_switch(pick)
-        except Exception as e:
-            st.session_state.error = f"Switching failed: {e}"
-        st.rerun()
-with col2:
-    drop = st.selectbox("Delete from disk", others, index=None, placeholder="choose a model",
-                        help="The active model and the embedding model can't be deleted here")
-    sure = st.checkbox("Yes, delete it", disabled=not drop)
-    if st.button("Delete", disabled=not (drop and sure)):
-        try:
-            models.delete(drop)
-            st.session_state.done = f"Deleted {drop}."
-        except Exception as e:
-            st.session_state.error = f"Delete failed: {e}"
-        st.rerun()
+unused = [n for n in sizes if n not in choice.values()]
+drop = st.selectbox("Delete from disk", unused, index=None, placeholder="a model no use case uses")
+if st.button("Delete", disabled=not (drop and st.checkbox("Yes, delete it", disabled=not drop))):
+    try:
+        models.delete(drop)
+        st.session_state.done = f"Deleted {drop}."
+    except Exception as e:
+        st.session_state.error = f"Delete failed: {e}"
+    st.rerun()
 
 # ---- download a new one ------------------------------------------------------------------
 st.subheader("Download a model")
-st.caption("Any name from [ollama.com/library](https://ollama.com/library) works. CPU-only laptop: stay at "
-           "4B parameters or below; ~4 GB of RAM is free for the model.")
-suggest = st.selectbox("Suggestions", list(models.SUGGESTED), index=None, placeholder="pick one, or type below",
-                       format_func=lambda n: f"{n}: {models.SUGGESTED[n]}")
+st.caption("Any name from [ollama.com/library](https://ollama.com/library) works. On this CPU-only laptop, 4B "
+           "parameters or fewer answer in reasonable time.")
+
+
+def suggest_label(n: str) -> str:
+    what, gb = models.SUGGESTED[n]
+    need = models.expected_ram_gb(gb)
+    fit = models.verdict(need, free_gb)
+    tps, _ = models.expected_speed(n, gb, speeds, sizes)
+    return f"{models.ICON[fit]} {n}: {what} · {gb} GB download · ~{need} GB RAM" + (f" · ~{tps} tok/s" if tps else "")
+
+
+suggest = st.selectbox("Suggestions", [n for n in models.SUGGESTED if n not in sizes], index=None,
+                       placeholder="pick one, or type a name below", format_func=suggest_label)
 name = st.text_input("Model name", value=suggest or "", placeholder="e.g. qwen3:4b").strip()
-then_use = st.checkbox("Switch to it when the download finishes", value=True)
+then_use = st.checkbox("Use it for every use case when the download finishes", value=False)
 if st.button("Download", disabled=not name):
     if not models.valid_name(name):
         st.error("That isn't a model name (letters, digits, . _ - : / only).")
@@ -99,14 +168,21 @@ if st.button("Download", disabled=not name):
                 if frac is not None:
                     bar.progress(min(frac, 1.0))
             bar.progress(1.0)
+            msg = f"Downloaded {name}."
             if then_use:
-                do_switch(name)
-            else:
-                st.session_state.done = f"Downloaded {name}."
+                models.switch(kube, name)
+                for _ in range(90):
+                    if kube.litellm_ready():
+                        break
+                    time.sleep(2)
+                tps, secs = models.speed_test(name)
+                kube.save_speed(name, tps)
+                msg += f" Every use case now uses it: {tps} tok/s (first answer {secs} s incl. loading)."
+            st.session_state.done = msg
         except Exception as e:
             st.session_state.error = f"Download failed: {e}"
         st.rerun()
 
 st.divider()
-st.caption("Same from a terminal: `.\\infra\\scripts\\platform.ps1 model use <name>` (Windows) or "
-           "`make model M=<name>` (Ubuntu). Compare models with `make e2e` after switching.")
+st.caption("From a terminal: `.\\infra\\scripts\\platform.ps1 model use <name>` (every use case) or "
+           "`make model M=<name>`. After a change, `make e2e` shows what still works.")

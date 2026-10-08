@@ -12,8 +12,8 @@ local-up: up  ## alias of up, same name as .\local-up on Windows
 profile:   ## switch optional services: make profile P=mlops,observability (P=core: only the core)
 	bash infra/scripts/profiles.sh set $(P)
 
-model:     ## the one chat model that runs: make model (list), make model M=qwen3:4b (switch to it)
-	bash infra/scripts/model.sh $(if $(M),use $(M),list)
+model:     ## models per use case: make model (list), make model M=qwen3:4b [FOR=agent] (switch)
+	bash infra/scripts/model.sh $(if $(M),use $(M) $(or $(FOR),all),list)
 
 up-docker: ## same as up, plus Docker
 	bash infra/scripts/platform.sh up --docker

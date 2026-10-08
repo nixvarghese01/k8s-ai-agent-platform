@@ -438,21 +438,32 @@ See [Thermal Management](#12-thermal-management). [`windows-thermal.ps1`](infra/
 
 | Alias | Model | Used by |
 |---|---|---|
-| `chat-default` | the **active** chat model (default `qwen2.5:3b`, `num_ctx: 8192`) | Open WebUI, n8n |
-| `chat-tools` | the same active model | The agent (tool calling) |
+| `chat-default` | the **Chat** model (default `qwen2.5:3b`, `num_ctx: 8192`) | Open WebUI |
+| `chat-tools` | the **Agent** model (default: same as Chat; tool-calling models only) | The agent, and through it the briefing, voice questions, web research |
+| `chat-email` | the **E-mail triage** model (default: same as Chat) | n8n's e-mail triage |
 | `embed-default` | `ollama/nomic-embed-text` | Document search embeddings (Open WebUI, RAG index) |
 
-**One chat model at a time.** Both chat aliases use the same model, so only one is ever in RAM (plus the small embedding model). The active one is named in ConfigMap `llm/llm-model`, not in Git, so ArgoCD keeps your choice (like the profiles); LiteLLM fills it into its config on start.
+**A model per use case, chosen in the browser:** https://agent.ai.local → **Models**. The choice is kept in ConfigMap `llm/llm-model`, not in Git, so ArgoCD keeps it (like the profiles); LiteLLM fills it into its config on start.
 
-**Switch models from the browser:** https://agent.ai.local → **Models**. It lists the downloaded models (size, parameters, whether they can call tools, which is in RAM), switches with one button, downloads a new one by name with a progress bar (suggestions for this CPU laptop included) and deletes ones you don't need. A switch restarts LiteLLM, frees the previous model from RAM and asks the new one a test question: ~1 minute, measured 68 s including loading a 3B model. From a terminal, the same:
+- **Model for each use case:** a dropdown each for Chat, Agent and E-mail triage; every entry shows ✅ fits / ⚠️ tight / ❌ too big, the RAM it takes and its speed. Below, the combined check for the selection ("2 models, needs ~5.4 GB, 12.2 GB free: fits"), a note when different models will swap, and the expected time for a short answer per use case. **Apply** restarts LiteLLM, unloads models no use case needs, loads each chosen model and measures its speed (~70 s).
+- **This laptop** (sidebar): WSL's RAM used/free, CPU load, which models are in RAM and how much each takes, and how much a chat model may use.
+- **Downloaded:** size, RAM, speed (measured, or "est."), fits, tool calling, which use cases use it; delete the ones nobody uses.
+- **Download a model:** suggestions with expected RAM, speed and fit *before* you download, or any Ollama name; optionally switch every use case to it afterwards.
+
+How the numbers are made: RAM and CPU are the WSL VM's (`/proc` in the pod). A loaded model's RAM is what Ollama reports; otherwise it's estimated as `1.35 × download + 0.3 GB` (8K context; measured `qwen2.5:3b` 1.9 → 2.4 GB, `llama3.2:3b` 2.0 → 3.1 GB). "Fits" leaves 1 GB spare; free RAM counts the chat models that would be unloaded. Speed is measured on every Apply and kept per model; until then it's scaled from the measured ones (on a CPU, tokens/s × model size is roughly constant: 8–9 tok/s for the 3B models here). An answer of ~150 tokens takes ~16–19 s at that speed.
+
+**One model in RAM, or two.** Same model everywhere means one chat model in RAM. Different ones are allowed, but Ollama keeps at most 2 models loaded (`OLLAMA_MAX_LOADED_MODELS=2`, [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh)), so moving between use cases reloads one (+10–25 s) instead of filling RAM. Measured: e-mail triage on `llama3.2:3b` while chat and the agent stay on `qwen2.5:3b` works (15.6 s per e-mail).
+
+From a terminal, the same:
 
 | From Windows | Inside Ubuntu | |
 |---|---|---|
-| `.\infra\scripts\platform.ps1 model` | `make model` | downloaded, active, in RAM |
-| `.\infra\scripts\platform.ps1 model use qwen3:4b` | `make model M=qwen3:4b` | download if needed, switch, free the old one |
-| `.\infra\scripts\platform.ps1 model remove llama3.2:3b` | `bash infra/scripts/model.sh remove llama3.2:3b` | delete a model you don't use |
+| `.\infra\scripts\platform.ps1 model` | `make model` | the model per use case, downloaded, in RAM |
+| `.\infra\scripts\platform.ps1 model use qwen3:4b` | `make model M=qwen3:4b` | download if needed, every use case on it, free the rest |
+| `.\infra\scripts\platform.ps1 model use llama3.2:1b email` | `make model M=llama3.2:1b FOR=email` | only that use case (`chat`, `agent`, `email`) |
+| `.\infra\scripts\platform.ps1 model remove llama3.2:3b` | `bash infra/scripts/model.sh remove llama3.2:3b` | delete a model no use case uses |
 
-A model without tool calling (the page shows it) still chats, but the agent's file, calendar and web steps won't work with it. The agent's prompts were tuned on `qwen2.5:3b`: after switching, `make e2e` shows what still works. The Models page may change only that ConfigMap and restart LiteLLM (Role `llm/model-switch`).
+A model without tool calling can't be picked for the Agent. The agent's prompts were tuned on `qwen2.5:3b`: after a change, `make e2e` shows what still works. The Models page may change only that ConfigMap and restart LiteLLM (Role `llm/model-switch`).
 
 Every new service should use the OpenAI client with `base_url=http://litellm.llm.svc.cluster.local:4000/v1`, any API key and an alias, never an Ollama URL or model name. Then changing a model is one line in one file.
 

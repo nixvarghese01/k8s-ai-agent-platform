@@ -40,7 +40,7 @@ data:
          "parameters": {"method": "POST", "url": "http://litellm.llm.svc.cluster.local:4000/v1/chat/completions",
            "sendHeaders": true, "headerParameters": {"parameters": [{"name": "Authorization", "value": "Bearer sk-local"}]},
            "sendBody": true, "specifyBody": "json",
-           "jsonBody": "={{ JSON.stringify({ model: 'chat-default', temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'You sort e-mail. Reply with JSON only: {\"category\": one of work, personal, billing, newsletter, other; \"summary\": one short sentence; \"needs_reply\": true or false}.' }, { role: 'user', content: 'From: ' + ($('Email in').item.json.body.from || '') + '\\nSubject: ' + ($('Email in').item.json.body.subject || '') + '\\n\\n' + ($('Email in').item.json.body.body || '') } ] }) }}",
+           "jsonBody": "={{ JSON.stringify({ model: 'chat-email', temperature: 0, response_format: { type: 'json_object' }, messages: [ { role: 'system', content: 'You sort e-mail. Reply with JSON only: {\"category\": one of work, personal, billing, newsletter, other; \"summary\": one short sentence; \"needs_reply\": true or false}.' }, { role: 'user', content: 'From: ' + ($('Email in').item.json.body.from || '') + '\\nSubject: ' + ($('Email in').item.json.body.subject || '') + '\\n\\n' + ($('Email in').item.json.body.body || '') } ] }) }}",
            "options": {"timeout": 300000}}},
         {"id": "a6", "name": "Reply: sorted", "type": "n8n-nodes-base.respondToWebhook", "typeVersion": 1.1, "position": [960, 120],
          "parameters": {"respondWith": "json",

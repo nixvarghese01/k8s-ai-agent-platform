@@ -8,14 +8,15 @@
 #   .\infra\scripts\platform.ps1 restart [-Docker] [-KeepWsl]  down, then up: a full cold restart
 #   .\infra\scripts\platform.ps1 headlamp-token  copy the Headlamp login token to the clipboard
 #   .\infra\scripts\platform.ps1 set-login       choose the single sign-on username + password
-#   .\infra\scripts\platform.ps1 model [use|remove <name>]  the one chat model that runs (or the
-#                                                 Models page at https://agent.ai.local)
+#   .\infra\scripts\platform.ps1 model [use <name> [chat|agent|email] | remove <name>]  the model of
+#                                                 each use case (or the Models page at https://agent.ai.local)
 #
 # `down` without -KeepWsl closes any open Ubuntu terminals too.
 param(
     [Parameter(Mandatory, Position = 0)][ValidateSet('up', 'down', 'status', 'restart', 'headlamp-token', 'set-login', 'profile', 'model')][string]$Action,
     [Parameter(Position = 1)][Alias('Profile')][string]$Profiles,  # not $Profile: that's PowerShell's own $PROFILE; for `model`: use/remove
     [Parameter(Position = 2)][string]$Name,  # model name for `model use` / `model remove`
+    [Parameter(Position = 3)][ValidateSet('all', 'chat', 'agent', 'email')][string]$UseCase = 'all',  # `model use <name> agent`
     [switch]$Docker,
     [switch]$KeepWsl
 )
@@ -53,6 +54,7 @@ switch ($Action) {
     }
     'model' {
         $modelArgs = @(); if ($Profiles) { $modelArgs += $Profiles }; if ($Name) { $modelArgs += $Name }
+        if ($Profiles -eq 'use') { $modelArgs += $UseCase }
         wsl -d $distro -u root -- bash "$here/model.sh" @modelArgs
         if ($LASTEXITCODE -ne 0) { throw "model.sh $($modelArgs -join ' ') failed ($LASTEXITCODE)" }
     }
