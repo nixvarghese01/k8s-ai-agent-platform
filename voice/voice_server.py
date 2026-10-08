@@ -25,6 +25,9 @@ from pydantic import BaseModel
 MODELS = Path(os.environ.get("MODELS_DIR", "/models"))
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "base")  # tiny | base | small: speed vs accuracy
 PIPER_VOICE = os.environ.get("PIPER_VOICE", "en_US-amy-medium")
+# the Piper voices a request may pick by name; anything else (OpenAI's alloy, nova, ...) gets
+# PIPER_VOICE. A request never names a file or a download directly.
+PIPER_VOICES = [v.strip() for v in os.environ.get("PIPER_VOICES", PIPER_VOICE).split(",") if v.strip()]
 THREADS = int(os.environ.get("CPU_THREADS", "4"))
 
 log = logging.getLogger("voice")
@@ -54,9 +57,11 @@ def piper(name: str):
             from piper import PiperVoice
             from piper.download_voices import download_voice
 
-            folder = MODELS / "piper"
+            folder = (MODELS / "piper").resolve()
             folder.mkdir(parents=True, exist_ok=True)
-            onnx = folder / f"{name}.onnx"
+            onnx = (folder / f"{name}.onnx").resolve()
+            if onnx.parent != folder:
+                raise ValueError(f"bad voice name {name!r}")
             if not onnx.exists():
                 download_voice(name, folder)
             _voices[name] = PiperVoice.load(str(onnx))
@@ -122,8 +127,8 @@ def speech(req: SpeechRequest):
     """OpenAI-style speech; returns WAV (browsers play it; no ffmpeg needed for mp3)."""
     if not req.input.strip():
         raise HTTPException(400, "empty input")
-    # OpenAI voice names (alloy, nova, ...) map to the configured Piper voice
-    name = req.voice if req.voice and "-" in req.voice else PIPER_VOICE
+    # OpenAI voice names (alloy, nova, ...) and unknown ones map to the configured Piper voice
+    name = next((v for v in PIPER_VOICES if v == req.voice), PIPER_VOICE)
     t = time.time()
     audio = synthesize(req.input, name, req.speed)
     log.info("spoke %d chars in %.1fs", len(req.input), time.time() - t)

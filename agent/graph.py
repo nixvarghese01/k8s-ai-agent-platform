@@ -84,7 +84,9 @@ RESEARCH_INTENT = re.compile(
     re.IGNORECASE,
 )
 # Where a request with several steps divides: "list my files and then read the to-do list"
-STEP_BREAK = re.compile(r"\s*[,;.]?\s*\b(?:and then|then|after that|afterwards|and also)\b[,:]?\s*", re.IGNORECASE)
+# No leading \s*: split() would retry it at every space of a long run (quadratic, CodeQL
+# py/polynomial-redos); split_request strips the spaces and punctuation from the parts instead.
+STEP_BREAK = re.compile(r"\b(?:and then|then|after that|afterwards|and also)\b[,:]?", re.IGNORECASE)
 MAX_STEPS_PER_REQUEST = 4
 
 ANSWER_PROMPT = """Answer the user's question from this material:
@@ -110,7 +112,7 @@ SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "system.md").read_text(enco
 def split_request(message: str) -> list[str]:
     """The parts of a multi-step request, in order; one part if it isn't one. A part needs two
     words or more ("what then?" stays whole), and a leading "first" is dropped."""
-    parts = [re.sub(r"^(first|firstly)[,:]?\s+", "", p.strip(" ,;."), flags=re.IGNORECASE)
+    parts = [re.sub(r"^(first|firstly)[,:]?\s+", "", p.strip(" \t\r\n,;."), flags=re.IGNORECASE)
              for p in STEP_BREAK.split(message)]
     parts = [p for p in parts if len(p.split()) >= 2]
     if len(parts) < 2:

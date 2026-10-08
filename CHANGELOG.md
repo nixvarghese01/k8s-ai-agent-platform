@@ -36,6 +36,13 @@ First release: the full platform from the 8-week build plus hardening. All 10 us
   images.
 - **Docs:** README, weekly notes, demo script, `SECURITY.md`, `CONTRIBUTING.md`.
 
+### Security
+- Voice server: the `voice` of a speech request is matched against the configured Piper voices
+  (`PIPER_VOICES`) instead of being used as a file and download name (CodeQL
+  `py/path-injection`).
+- Agent: the multi-step request splitter no longer takes quadratic time on long runs of spaces
+  (CodeQL `py/polynomial-redos`).
+
 ### Known limitations
 - CPU-only answers take seconds (3–40 s per question); see README 9.
 - The spam classifier is trained on SMS spam and misses phishing e-mails (#31).
