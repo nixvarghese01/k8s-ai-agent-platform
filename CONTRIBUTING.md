@@ -27,9 +27,11 @@ Examples: `feature/42-calendar-reminders`, `bugfix/31-phishing-recall`, `docs/in
 **Branch protection** (repository rulesets):
 
 - **`main`:** no direct pushes, force pushes or deletion. Changes arrive only as pull requests
-  from `development` (a release) or `hotfix/*`, enforced by the `branch policy` check. They need
-  the code owner ([`CODEOWNERS`](.github/CODEOWNERS)), so only the maintainer merges into `main`.
-  CI must pass; releases use a merge commit so `main` keeps the history of `development`.
+  from `development` (a release) or `hotfix/*`, enforced by the `branch policy` check. Only the
+  maintainer has write access, so only the maintainer merges into `main`; [`CODEOWNERS`](.github/CODEOWNERS)
+  requests their review on every PR. CI must pass; releases use a merge commit so `main` keeps
+  the history of `development`. No approval count is required (GitHub doesn't let an author
+  approve their own PR) and nobody bypasses the rules, admins included.
 - **`development`:** no direct pushes, force pushes or deletion. Pull requests from the prefixes
   above, CI must pass, squash merge (a merge commit for the `main` back-merge). The build
   workflow's image-pin commits (`Deploy images built from …`) are the one exception: they're
