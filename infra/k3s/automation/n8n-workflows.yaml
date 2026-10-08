@@ -3,8 +3,9 @@
 # next start. To change a workflow: edit it in the UI, export it (... > Download), paste it here.
 #   email-triage    POST http://n8n.automation.svc.cluster.local:5678/webhook/email-triage
 #                   {"from", "subject", "body"} -> spam verdict (BentoML) or category + summary (LLM)
-#   daily-briefing  07:30 Asia/Dubai, or GET .../webhook/daily-briefing: asks the agent for today's
-#                   to-dos and decisions, writes E:\ai-files\briefings\<date>.md
+#   daily-briefing  07:30 Asia/Dubai, or GET .../webhook/daily-briefing: today's calendar
+#                   (mcp-calendar), the to-dos (agent) and headlines (mcp-web, research profile;
+#                   change the topic in the Headlines node's URL), writes E:\ai-files\briefings\<date>.md
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -70,21 +71,31 @@ data:
            "sendBody": true, "specifyBody": "json",
            "jsonBody": "={{ JSON.stringify({ message: 'For my morning briefing: what is on my to-do list?' }) }}",
            "options": {"timeout": 900000}}},
-        {"id": "b4", "name": "Build the note", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [520, 100],
+        {"id": "b7", "name": "Calendar today", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [520, 100],
+         "onError": "continueRegularOutput",
+         "parameters": {"method": "GET", "url": "http://mcp-calendar.agent.svc.cluster.local:8000/events?when=today&days=1",
+           "options": {"timeout": 30000}}},
+        {"id": "b8", "name": "Headlines", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4.2, "position": [780, 100],
+         "onError": "continueRegularOutput",
+         "parameters": {"method": "GET", "url": "http://mcp-web.agent.svc.cluster.local:8000/headlines?n=5&q=artificial%20intelligence%20news%20today",
+           "options": {"timeout": 60000}}},
+        {"id": "b4", "name": "Build the note", "type": "n8n-nodes-base.set", "typeVersion": 3.4, "position": [1040, 100],
          "parameters": {"mode": "manual", "assignments": {"assignments": [
            {"id": "s1", "name": "date", "type": "string", "value": "={{ $now.setZone('Asia/Dubai').toFormat('yyyy-MM-dd') }}"},
            {"id": "s2", "name": "markdown", "type": "string",
-            "value": "=# Briefing {{ $now.setZone('Asia/Dubai').toFormat('cccc d LLLL yyyy') }}\n\n## To-do\n\n{{ $json.answer }}\n\n---\n_Written by n8n (Daily briefing) at {{ $now.setZone('Asia/Dubai').toFormat('HH:mm') }}; the agent took {{ $json.seconds }} s._\n"}]},
+            "value": "=# Briefing {{ $now.setZone('Asia/Dubai').toFormat('cccc d LLLL yyyy') }}\n\n## Calendar\n\n{{ $('Calendar today').item.json.text || 'Calendar not available.' }}\n\n## To-do\n\n{{ $('Ask the agent').item.json.answer }}\n\n## Headlines\n\n{{ $('Headlines').item.json.text || 'Web search not available.' }}\n\n---\n_Written by n8n (Daily briefing) at {{ $now.setZone('Asia/Dubai').toFormat('HH:mm') }}; the agent took {{ $('Ask the agent').item.json.seconds }} s._\n"}]},
            "options": {}}},
-        {"id": "b5", "name": "To file", "type": "n8n-nodes-base.convertToFile", "typeVersion": 1.1, "position": [760, 100],
+        {"id": "b5", "name": "To file", "type": "n8n-nodes-base.convertToFile", "typeVersion": 1.1, "position": [1280, 100],
          "parameters": {"operation": "toText", "sourceProperty": "markdown", "options": {"fileName": "={{ $json.date }}.md"}}},
-        {"id": "b6", "name": "Save to briefings", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [1000, 100],
+        {"id": "b6", "name": "Save to briefings", "type": "n8n-nodes-base.readWriteFile", "typeVersion": 1, "position": [1520, 100],
          "parameters": {"operation": "write", "fileName": "=/briefings/{{ $('Build the note').item.json.date }}.md", "dataPropertyName": "data", "options": {}}}
       ],
       "connections": {
         "Every morning 07:30": {"main": [[{"node": "Ask the agent", "type": "main", "index": 0}]]},
         "On request": {"main": [[{"node": "Ask the agent", "type": "main", "index": 0}]]},
-        "Ask the agent": {"main": [[{"node": "Build the note", "type": "main", "index": 0}]]},
+        "Ask the agent": {"main": [[{"node": "Calendar today", "type": "main", "index": 0}]]},
+        "Calendar today": {"main": [[{"node": "Headlines", "type": "main", "index": 0}]]},
+        "Headlines": {"main": [[{"node": "Build the note", "type": "main", "index": 0}]]},
         "Build the note": {"main": [[{"node": "To file", "type": "main", "index": 0}]]},
         "To file": {"main": [[{"node": "Save to briefings", "type": "main", "index": 0}]]}
       }

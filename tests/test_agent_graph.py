@@ -132,3 +132,127 @@ def test_spam_questions_go_to_the_tools_not_the_documents():
     run([searcher(PASSAGE, calls), list_dir], [AIMessage("SPAM")], "Is this spam: 'You won a prize, call now'?")
     run([searcher(PASSAGE, calls), list_dir], [AIMessage("ok")], "Classify this message: hi mum")
     assert calls == []
+
+
+# ---- workflows 1, 5, 6, 7: memory, calendar, web research, planning ----------------------
+def memory_tools(saved: list, facts: str = "#1 I live in Dubai (saved 2026-10-08)"):
+    @tool
+    def remember(fact: str) -> str:
+        """Save a fact."""
+        saved.append(fact)
+        return f"Remembered: {fact}"
+
+    @tool
+    def forget(what: str) -> str:
+        """Delete a fact."""
+        saved.append(f"-{what}")
+        return f"Forgot: {what}"
+
+    @tool
+    def recall(query: str = "") -> str:
+        """Look up facts."""
+        return facts
+
+    return [remember, forget, recall]
+
+
+def test_remember_and_forget_are_stored_without_the_model():
+    saved = []
+    model, result = run(memory_tools(saved), [], "Remember that my gym renews on 1 November")
+    assert saved == ["my gym renews on 1 November"] and model.seen == []
+    assert result["messages"][-1].content == "Got it, I'll remember: my gym renews on 1 November"
+    model, result = run(memory_tools(saved), [], "please forget that my gym renews")
+    assert saved[-1] == "-my gym renews" and result["messages"][-1].content.startswith("Done, I've forgotten")
+
+
+def test_saved_facts_reach_the_model_with_todays_date():
+    model, result = run([*memory_tools([]), list_dir], [AIMessage("In Dubai.")], "Where do I live?")
+    system = model.seen[0][0].content
+    assert "I live in Dubai" in system and "Today is " in system
+    assert result["memories"].startswith("#1")
+
+
+def test_calendar_questions_skip_the_documents():
+    calls = []
+    for q in ("What's on my calendar tomorrow?", "Am I free on Friday afternoon?", "Add a meeting with Maria tomorrow 3pm",
+              "What day is it?"):
+        run([searcher(PASSAGE, calls), list_dir], [AIMessage("ok")], q)
+    assert calls == []
+
+
+def test_web_questions_run_research_then_one_summary_call():
+    asked = []
+
+    @tool
+    def research(question: str) -> str:
+        """Research the web."""
+        asked.append(question)
+        return "[1] Release notes\nhttps://example.com/v2\nVersion 2 is out."
+
+    model, result = run([research, list_dir], [AIMessage("Version 2 is out [1].")], "Search the web for the latest release")
+    assert asked == ["Search the web for the latest release"] and len(model.seen) == 1
+    assert "https://example.com/v2" in model.seen[0][0].content and "[1]" in model.seen[0][0].content
+    from main import web_sources
+
+    assert web_sources(result["web"], "Version 2 is out [1].") == "\n\nSources:\n[1] Release notes - https://example.com/v2"
+
+
+def test_research_off_is_reported_as_is():
+    @tool
+    def research(question: str) -> str:
+        """Research the web."""
+        return "Web search isn't running: it's part of the research profile."
+
+    model, result = run([research], [], "look this up online: weather")
+    assert model.seen == [] and "research profile" in result["messages"][-1].content
+
+
+def test_multi_step_requests_get_a_plan_first():
+    answers = [
+        AIMessage("1. list_dir to find the notes\n2. read_file the meeting note\nSure!"),
+        AIMessage("", tool_calls=[{"name": "list_dir", "args": {"path": "."}, "id": "c1"}]),
+        AIMessage("Done: README.md is the only file."),
+    ]
+    calls = []
+    model, result = run([searcher(PASSAGE, calls), list_dir], answers, "List my files and then summarise the meeting note")
+    assert calls == []  # planned tasks skip the automatic retrieval
+    assert result["plan"] == "1. list_dir to find the notes\n2. read_file the meeting note"
+    assert "Plan for this request" in model.seen[1][0].content and "2. read_file" in model.seen[1][0].content
+    assert result["messages"][-1].content == "Done: README.md is the only file."
+
+
+def test_load_tools_skips_servers_that_are_down(monkeypatch):
+    import graph
+
+    class Client:
+        def __init__(self, servers):
+            pass
+
+        async def get_tools(self, server_name):
+            if server_name == "down":
+                raise ConnectionError("refused")
+            return [list_dir]
+
+    monkeypatch.setattr(graph, "MultiServerMCPClient", Client)
+    monkeypatch.setattr(graph, "MCP_SERVERS", {"up": {"url": "u"}, "down": {"url": "d"}})
+    tools, missing = asyncio.run(graph.load_tools())
+    assert [t.name for t in tools] == ["list_dir"] and missing == ["down"]
+
+
+def test_an_unfinished_plan_is_continued():
+    @tool
+    def read_file(path: str) -> str:
+        """Read a file."""
+        return "- buy milk"
+
+    answers = [
+        AIMessage("1. list_dir to find the to-do list\n2. read_file the to-do list"),
+        AIMessage("", tool_calls=[{"name": "list_dir", "args": {"path": "."}, "id": "c1"}]),
+        AIMessage("Your folder has README.md."),  # stops after step 1
+        AIMessage("", tool_calls=[{"name": "read_file", "args": {"path": "todo.md"}, "id": "c2"}]),
+        AIMessage("Files: README.md. To-do: buy milk."),
+    ]
+    model, result = run([list_dir, read_file], answers, "List my files and then read my to-do list")
+    assert "Not done yet: 2. read_file" in model.seen[3][-1].content
+    assert result["messages"][-1].content == "Files: README.md. To-do: buy milk."
+    assert "Your folder has README.md." not in [m.content for m in result["messages"]]

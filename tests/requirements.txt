@@ -1,6 +1,9 @@
 -r ../agent/requirements.txt
 -r ../mcp-servers/rag/requirements.txt
 -r ../mcp-servers/triage/requirements.txt
+-r ../mcp-servers/memory/requirements.txt
+-r ../mcp-servers/calendar/requirements.txt
+-r ../mcp-servers/web/requirements.txt
 -r ../pipelines/requirements.txt
 -r ../serving/requirements.txt
 python-multipart==0.0.32  # voice server API (its models are not needed in tests)

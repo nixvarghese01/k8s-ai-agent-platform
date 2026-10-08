@@ -32,4 +32,4 @@
 ## Not built (follow-up)
 - Workflow 5 (calendar) and 6 (web research): need time/calendar, web-search and fetch MCP
   servers, and calendar credentials. Workflow 1's memory needs a memory MCP; workflow 7 has tool
-  chaining but no planning step.
+  chaining but no planning step. Built afterwards: [assistant.md](assistant.md) (#27).

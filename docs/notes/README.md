@@ -14,6 +14,7 @@ decisions and why, and what was measured. The README has the full how-to; these 
 | 6 | [Automation and observability: n8n, Phoenix, Prometheus, Grafana](week-06.md) | ✅ |
 | 7 | [GitOps CI/CD: GitHub Actions, GHCR, ArgoCD](week-07.md) | ✅ |
 | 8 | [Voice, OCR, docs, demo](week-08.md) | ✅ |
+| — | [Memory, calendar, web research, planning (#27)](assistant.md) | ✅ |
 
 Machine-specific changes (what ran on this laptop, how to undo it) go in `docs/DEVICE_LOG.md`,
 which stays local.

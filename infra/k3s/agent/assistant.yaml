@@ -1,0 +1,364 @@
+# The agent's assistant tools (README §6.19), one small MCP server each, always on (core):
+#   mcp-memory    facts the agent keeps across conversations (workflow 1), SQLite on a volume
+#   mcp-calendar  date/time and the user's calendars from .ics files and feeds (workflow 5)
+#   mcp-web       web search + page reading through SearXNG (workflow 6)
+#   searxng       self-hosted metasearch, profile `research`: off, the web tools say so
+# Images are built and pinned by CI (build.yml), like the other MCP servers.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: memory-data
+  namespace: agent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-memory
+  namespace: agent
+  labels:
+    app: mcp-memory
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # SQLite on a ReadWriteOnce volume
+  selector:
+    matchLabels:
+      app: mcp-memory
+  template:
+    metadata:
+      labels:
+        app: mcp-memory
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: mcp-memory
+          image: local-ai/mcp-memory:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: MEMORY_DB
+              value: /data/memory.sqlite
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: memory-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-memory
+  namespace: agent
+spec:
+  selector:
+    app: mcp-memory
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# Calendars: .ics files in E:\ai-files\calendar (agent.ics is where new events go), plus
+# optional read-only feeds: put their URLs (e.g. Google Calendar's "secret address in iCal
+# format") in a Secret, never in Git:
+#   kubectl -n agent create secret generic calendar-feeds --from-literal=urls='https://... https://...'
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-calendar
+  namespace: agent
+  labels:
+    app: mcp-calendar
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-calendar
+  template:
+    metadata:
+      labels:
+        app: mcp-calendar
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000 # owns E:\ai-files in WSL
+        runAsGroup: 1000
+      containers:
+        - name: mcp-calendar
+          image: local-ai/mcp-calendar:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: CALENDAR_DIR
+              value: /data/calendar
+            - name: CALENDAR_TZ
+              value: Asia/Dubai
+            - name: ICS_URLS
+              valueFrom:
+                secretKeyRef:
+                  name: calendar-feeds
+                  key: urls
+                  optional: true
+          volumeMounts:
+            - name: calendar
+              mountPath: /data/calendar
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 192Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: calendar
+          hostPath:
+            path: /mnt/e/ai-files/calendar
+            type: DirectoryOrCreate
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-calendar
+  namespace: agent
+spec:
+  selector:
+    app: mcp-calendar
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-web
+  namespace: agent
+  labels:
+    app: mcp-web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-web
+  template:
+    metadata:
+      labels:
+        app: mcp-web
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: mcp-web
+          image: local-ai/mcp-web:dev
+          imagePullPolicy: Never
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: SEARXNG_URL
+              value: http://searxng.agent.svc.cluster.local:8080
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-web
+  namespace: agent
+spec:
+  selector:
+    app: mcp-web
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# SearXNG: asks several search engines at once and returns JSON to mcp-web. Only the agent uses
+# it (no ingress). Its secret key: Secret agent/searxng-secret, made by deploy.sh.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: searxng-settings
+  namespace: agent
+data:
+  settings.yml: |
+    use_default_settings: true
+    general:
+      instance_name: Local AI search
+      enable_metrics: false
+    server:
+      secret_key: from-the-SEARXNG_SECRET-env # replaced at start
+      limiter: false # one trusted client: the mcp-web server
+      image_proxy: false
+      public_instance: false
+    search:
+      safe_search: 1
+      formats: [html, json]
+    outgoing:
+      request_timeout: 4.0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: searxng
+  namespace: agent
+  labels:
+    app: searxng
+    local-ai/profile: research # off unless the research profile is on (scripts/profiles.sh)
+spec:
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
+  selector:
+    matchLabels:
+      app: searxng
+  template:
+    metadata:
+      labels:
+        app: searxng
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 977 # the image's searxng user
+        runAsGroup: 977
+      containers:
+        - name: searxng
+          # Pinned like LiteLLM: change tag + digest deliberately
+          image: searxng/searxng:2026.10.7-6671d89be@sha256:cc026dbee25b864d7f9731957cd5ef36ba2e2d61abd2996d57f1b863483e7409
+          env:
+            - name: SEARXNG_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: searxng-secret
+                  key: secret
+            - name: GRANIAN_HOST
+              value: 0.0.0.0 # the image's default "::" needs IPv6 in the pod
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: settings
+              mountPath: /etc/searxng
+              readOnly: true
+            - name: cache
+              mountPath: /var/cache/searxng
+          securityContext:
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 384Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      volumes:
+        - name: settings
+          configMap:
+            name: searxng-settings
+        - name: cache
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: searxng
+  namespace: agent
+spec:
+  selector:
+    app: searxng
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

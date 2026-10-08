@@ -75,6 +75,9 @@ jobs:
           - { name: mcp-filesystem, context: mcp-servers/filesystem }
           - { name: mcp-rag, context: mcp-servers/rag }
           - { name: mcp-triage, context: mcp-servers/triage }
+          - { name: mcp-memory, context: mcp-servers/memory }
+          - { name: mcp-calendar, context: mcp-servers/calendar }
+          - { name: mcp-web, context: mcp-servers/web }
           - { name: mlflow, context: mlops/mlflow }
           - { name: pipelines, context: pipelines }
           - { name: serving, context: serving }

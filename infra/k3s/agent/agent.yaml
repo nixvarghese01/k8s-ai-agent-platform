@@ -79,6 +79,19 @@ spec:
       port: 8000
       targetPort: http
 ---
+# Conversations (LangGraph checkpoints, per thread_id), kept across agent restarts
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-data
+  namespace: agent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 512Mi
+---
 # Agent API: http://agent.agent.svc.cluster.local:8000 (POST /chat, GET /tools)
 apiVersion: apps/v1
 kind: Deployment
@@ -89,6 +102,8 @@ metadata:
     app: agent
 spec:
   replicas: 1
+  strategy:
+    type: Recreate # SQLite on a ReadWriteOnce volume
   selector:
     matchLabels:
       app: agent
@@ -97,6 +112,8 @@ spec:
       labels:
         app: agent
     spec:
+      securityContext:
+        fsGroup: 1000 # the image's user writes the conversations volume
       containers:
         - name: agent
           image: ghcr.io/nixvarghese01/local-ai-agent:sha-d3bf9c8c76f404d5455c8f3b1053746c8455b7a2@sha256:320eaaca7baba16cc2c217257e41cca7e9854ed3f3dbcd2cbb5277c504e48eb7
@@ -118,7 +135,14 @@ spec:
               value: |
                 {"filesystem": {"url": "http://mcp-filesystem.agent.svc.cluster.local:8000/mcp"},
                  "rag": {"url": "http://mcp-rag.agent.svc.cluster.local:8000/mcp"},
-                 "triage": {"url": "http://mcp-triage.agent.svc.cluster.local:8000/mcp"}}
+                 "triage": {"url": "http://mcp-triage.agent.svc.cluster.local:8000/mcp"},
+                 "memory": {"url": "http://mcp-memory.agent.svc.cluster.local:8000/mcp"},
+                 "calendar": {"url": "http://mcp-calendar.agent.svc.cluster.local:8000/mcp"},
+                 "web": {"url": "http://mcp-web.agent.svc.cluster.local:8000/mcp"}}
+            - name: CHECKPOINT_DB
+              value: /data/checkpoints.sqlite
+            - name: AGENT_TZ
+              value: Asia/Dubai
           securityContext:
             runAsNonRoot: true
             readOnlyRootFilesystem: true
@@ -130,6 +154,9 @@ spec:
             limits:
               cpu: "1"
               memory: 768Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
           readinessProbe:
             httpGet:
               path: /health
@@ -142,6 +169,10 @@ spec:
               port: http
             initialDelaySeconds: 30
             periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agent-data
 ---
 apiVersion: v1
 kind: Service

@@ -66,6 +66,8 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 | UI | Open WebUI + custom Streamlit | Chat UI and agent UI |
 | Voice | faster-whisper + Piper | Speech-to-text and text-to-speech for Open WebUI ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) |
 | OCR | Tesseract | Scanned PDFs and images into the document index |
+| Web search | SearXNG | Self-hosted metasearch for the agent's web research ([6.19](#619-memory-calendar-web-research-and-planning-agent)) |
+| Calendar | iCalendar (.ics) | Local calendar files and read-only feeds, no account login |
 | Cluster UI | Headlamp | Web dashboard for pods, logs, events and resource usage |
 | Automation | n8n | Scheduled and event-driven workflows |
 | LLM Observability | Phoenix (Arize, OpenTelemetry) | Traces of every agent run and LLM call: steps, prompts, latency ([6.16](#616-observability-phoenix-prometheus-grafana)); chosen over Langfuse v3 for the RAM budget |
@@ -153,6 +155,7 @@ local-ai-platform/
 │   │   ├── mlops/serving.yaml     # BentoML model server, profile mlops (6.15)
 │   │   ├── agent/agent.yaml      # file agent API + filesystem MCP server
 │   │   ├── agent/rag.yaml        # RAG: mcp-rag search server + rag-index CronJob (6.12)
+│   │   ├── agent/assistant.yaml  # memory, calendar, web MCP servers + SearXNG (6.19)
 │   │   ├── voice/voice.yaml      # voice server, profile voice (6.18)
 │   │   ├── ui/open-webui.yaml
 │   │   ├── ui/agent-ui.yaml      # Streamlit agent UI (agent.ai.local)
@@ -191,23 +194,21 @@ local-ai-platform/
 │       ├── screenshots.ps1 # capture the UIs into docs/screenshots/ (README 10.4)
 │       ├── rag-index.sh    # run the RAG indexer now (make rag-index)
 │       ├── set-login.sh    # choose the single sign-on username + password
-│       ├── profiles.sh     # on-demand profiles: mlops, observability, automation, voice (6.6)
+│       ├── profiles.sh     # on-demand profiles: mlops, observability, automation, voice, gitops, research (6.6)
 │       └── status.sh
 ├── agent/                  # LangGraph agent (6.10)
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py             # FastAPI: POST /chat, GET /tools
-│   ├── graph.py            # retrieve -> answer, else model -> tools loop (6.12)
+│   ├── graph.py            # route -> memory / research / retrieve -> answer, plan, tools loop (6.12, 6.19)
 │   └── prompts/system.md
 ├── mcp-servers/
 │   ├── filesystem/         # read-only list/search/read over one folder (6.10)
 │   ├── rag/                # LlamaIndex indexer + search_documents over Qdrant (6.12)
 │   ├── triage/             # classify_message over the BentoML service (6.15)
-│   ├── web-search/
-│   ├── fetch/
-│   ├── memory/
-│   ├── sqlite/
-│   └── time/
+│   ├── memory/             # remember / recall / forget, SQLite (6.19)
+│   ├── calendar/           # now / list_events / add_event over .ics files and feeds (6.19)
+│   └── web/                # web_search / fetch_page / research through SearXNG (6.19)
 ├── mlops/mlflow/           # MLflow server image (adds the Postgres driver and boto3)
 ├── pipelines/              # Dagster image + code (6.13)
 │   ├── dagster.yaml        # instance: Postgres storage, run queue, logs in S3
@@ -387,6 +388,7 @@ After [`05-on-demand-services.sh`](infra/scripts/host/05-on-demand-services.sh) 
 | `automation` | n8n (Week 6) | scheduled workflows |
 | `voice` | speech-to-text, text-to-speech (Week 8) | talking to the agent |
 | `gitops` | ArgoCD (Week 7) | deploying from GitHub |
+| `research` | SearXNG, the agent's web search ([6.19](#619-memory-calendar-web-research-and-planning-agent)) | asking the agent to look things up online |
 
 | From Windows | Inside Ubuntu | What it does |
 |---|---|---|
@@ -705,6 +707,40 @@ Try it from a pod: `curl -X POST http://n8n.automation.svc.cluster.local:5678/we
 
 **Limits:** a file that yields no text (a photo without words) is re-read on every index run, which costs CPU if you have many. Handwriting OCRs poorly; PaddleOCR would do better at ~1 GB more RAM.
 
+### 6.19 Memory, calendar, web research and planning (agent)
+
+Workflows 1, 5, 6 and 7 (#27): three more MCP servers in the core, one search engine in the `research` profile, and two new steps in the agent graph. Ask at https://agent.ai.local.
+
+| Piece | Code | Deployed by |
+|---|---|---|
+| Memory MCP: `remember`, `recall`, `forget`; facts in SQLite on a volume | [`mcp-servers/memory/`](mcp-servers/memory/memory_server.py) | `mcp-memory` in [`agent/assistant.yaml`](infra/k3s/agent/assistant.yaml) |
+| Calendar MCP: `now`, `list_events`, `add_event`; `.ics` files + feeds | [`mcp-servers/calendar/`](mcp-servers/calendar/calendar_server.py) | `mcp-calendar` |
+| Web MCP: `web_search`, `fetch_page`, `research` | [`mcp-servers/web/`](mcp-servers/web/web_server.py) | `mcp-web` |
+| SearXNG, self-hosted metasearch (profile `research`) | upstream image, pinned | `searxng` |
+| Agent: memory and research steps, planning, today's date in every prompt, conversations in SQLite | [`agent/graph.py`](agent/graph.py), [`agent/main.py`](agent/main.py) | [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
+
+**Memory (workflow 1).** "Remember that my manager is Maria Lopez" is stored straight away (0.2 s, no model call); "forget that ..." deletes it. On every question the agent looks up the saved facts that share words with it and gives them to the model, so "Who is my manager?" in a new conversation answers in ~3 s. Conversations themselves are kept in SQLite on the `agent-data` volume (`CHECKPOINT_DB`), so a thread survives an agent restart. Matching is by words, not embeddings: enough for a few hundred personal facts, and instant.
+
+**Calendar (workflow 5).** No account login: calendars are iCalendar data. Put exported `.ics` files in `E:\ai-files\calendar\`; events the agent adds go to `calendar\agent.ics` in the same folder. For a live calendar, add its read-only feed URL (Google Calendar: *Settings → your calendar → Secret address in iCal format*; Outlook: *Publish calendar*) as a Secret, never in Git: `kubectl -n agent create secret generic calendar-feeds --from-literal=urls='https://...'`, then `kubectl -n agent rollout restart deploy/mcp-calendar`. Times are in `Asia/Dubai` (`CALENDAR_TZ`). Writing to Google or Outlook themselves would need OAuth; that isn't built.
+
+**Web research (workflow 6).** Turn on `research` (`.\infra\scripts\platform.ps1 profile <current>,research`; SearXNG ~130 MB). "Search the web for ...", "look this up online", "latest news on ..." run one `research` call (search, read the top 3 pages, excerpts with numbers) and one summary call; the answer cites `[1]` and lists the links. `fetch_page` only reads public addresses (private, loopback and link-local targets are refused at every redirect), so the agent can't be talked into reading cluster services. Queries leave the laptop (to the search engines, through SearXNG): this is the one feature that isn't offline.
+
+**Planning (workflow 7).** A request with several steps ("list my files **and then** tell me what my to-do list says") first gets a numbered plan (one call, no tools), which goes into the agent's prompt. If the model answers before calling a tool its plan names, it's told which step is missing and continues (at most twice); without that it often stopped after step 1.
+
+**Daily briefing (workflow 10)** now has three parts: today's calendar (`mcp-calendar` `/events`), the to-dos (agent) and five headlines (`mcp-web` `/headlines`; change the topic in the *Headlines* node). With `research` off the headlines say so and the rest is written as before.
+
+| Measured (2026-10-08, qwen2.5:3b on CPU) | Time |
+|---|---|
+| "Remember that ..." | 0.2 s |
+| "Who is my manager?" (saved fact, new conversation) | 3.2 s |
+| "Add a dentist appointment on Monday at 10am" | 10 s |
+| "What's on my calendar next week?" | 12–16 s |
+| "Search the web for the latest Kubernetes release" (3 pages read) | 17–19 s |
+| "List my files and then tell me what my to-do list says" (plan + 2 tools) | 57–98 s |
+| Daily briefing (calendar + to-dos + headlines) | 29 s |
+
+**RAM:** mcp-memory 54 MB, mcp-calendar 57 MB, mcp-web 98 MB (core); SearXNG 129 MB (`research`).
+
 ---
 
 ## 7. CI/CD and GitOps
@@ -774,16 +810,16 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 
 | # | Workflow | Target | Status (measured on CPU, 2026-10) | Main components |
 |---|---|---|---|---|
-| 1 | Chat + memory | 2–3 s | ◐ chat works (Open WebUI, ~2–8 s); no memory MCP yet | Ollama, LiteLLM, Open WebUI |
+| 1 | Chat + memory | 2–3 s | ✅ chat ~2–8 s; saved facts recalled in a new conversation in 3.2 s; conversations survive restarts ([6.19](#619-memory-calendar-web-research-and-planning-agent)) | Ollama, LiteLLM, Open WebUI, memory MCP |
 | 2 | File search | 2–4 s | ✅ 10–27 s: each tool call is a model round trip ([6.10](#610-file-agent-langgraph--filesystem-mcp)) | filesystem MCP, agent |
 | 3 | RAG Q&A | 3–5 s | ✅ 3–11 s, median ~7 s, with sources ([6.12](#612-document-qa-rag-llamaindex--qdrant)) | LlamaIndex, Qdrant, nomic-embed-text |
 | 4 | Email triage | 30–60 s | ✅ spam 1.2 s, normal mail 15 s; webhook in, IMAP needs your mailbox ([6.17](#617-automation-n8n)) | n8n, BentoML classifier, LLM |
-| 5 | Calendar | 2–4 s | ✗ not built: needs a calendar/time MCP server and your calendar's credentials | — |
-| 6 | Web research | 15–30 s | ✗ not built: needs web-search + fetch MCP servers | — |
-| 7 | Multi-step agent | 15–30 s | ◐ the agent chains tools (list → read, classify) but has no planning step | LangGraph |
+| 5 | Calendar | 2–4 s | ✅ 10–16 s: list and add events from `.ics` files and read-only feeds; no OAuth write-back to Google/Outlook ([6.19](#619-memory-calendar-web-research-and-planning-agent)) | calendar MCP |
+| 6 | Web research | 15–30 s | ✅ 17–19 s: search, read 3 pages, cited answer with links (`research` profile) | SearXNG, web MCP |
+| 7 | Multi-step agent | 15–30 s | ✅ plan then tools, every step done; slow on CPU: 57–98 s | LangGraph |
 | 8 | Voice assistant | 3–6 s | ✅ ~11 s spoken question → spoken answer: speech-to-text 3.4 s, agent ~7 s, text-to-speech 0.6 s ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) | faster-whisper, Piper, Open WebUI |
 | 9 | OCR pipeline | 4–8 s | ✅ scanned PDF / image → indexed in ~5 s each; answers cite `file.pdf p.N` ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) | Tesseract, RAG index |
-| 10 | Daily briefing | 30–60 s | ✅ 29 s, to-dos into `briefings/<date>.md`; no web or calendar part yet | n8n, agent |
+| 10 | Daily briefing | 30–60 s | ✅ 29 s: calendar, to-dos and headlines into `briefings/<date>.md` | n8n, agent, calendar + web MCP |
 
 Latencies are targets for CPU-only 3B models; Phoenix records the real ones per agent run and LLM call (§6.16).
 
@@ -830,6 +866,10 @@ Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a 
 | Agent API (LangGraph) | not exposed, see 10.3 | `http://agent.agent.svc.cluster.local:8000` | `POST /chat`, `GET /tools`, `GET /health`, `/docs` (FastAPI) |
 | Filesystem MCP server | not exposed, see 10.3 | `http://mcp-filesystem.agent.svc.cluster.local:8000` | `/mcp` (MCP streamable HTTP), `/health` |
 | RAG MCP server | not exposed, see 10.3 | `http://mcp-rag.agent.svc.cluster.local:8000` | `/mcp` (tool `search_documents`), `/health` |
+| Memory MCP server | not exposed | `http://mcp-memory.agent.svc.cluster.local:8000` | `/mcp` (`remember`, `recall`, `forget`), `/health` |
+| Calendar MCP server | not exposed | `http://mcp-calendar.agent.svc.cluster.local:8000` | `/mcp` (`now`, `list_events`, `add_event`), `GET /events?when=today&days=1`, `/health` |
+| Web MCP server | not exposed | `http://mcp-web.agent.svc.cluster.local:8000` | `/mcp` (`web_search`, `fetch_page`, `research`), `GET /headlines?q=...`, `/health` |
+| SearXNG (profile `research`) | not exposed | `http://searxng.agent.svc.cluster.local:8080` | `/search?q=...&format=json`, `/healthz` |
 | MLflow | https://mlflow.ai.local | `http://mlflow.mlops.svc.cluster.local:5000` | `/` UI, `/health`, `/api/2.0/mlflow/...` (REST), `/api/2.0/mlflow-artifacts/...` (artifact proxy) |
 | Dagster | https://dagster.ai.local | `http://dagster-webserver.mlops.svc.cluster.local:3000` | `/` UI, `/server_info`, `/graphql` |
 | SeaweedFS | https://s3.ai.local (admin UI) | `http://seaweedfs.storage.svc.cluster.local:8333` (S3 API), `:23646` (admin UI) | S3: buckets `mlflow`, `dagster`; keys from `make s3-credentials` |
@@ -975,11 +1015,14 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | ArgoCD memory | 1.3 GB is significant; consider disabling Dex/notifications or using ArgoCD core mode. |
 | GHCR 500 MB limit | **Resolved:** images are public (the repo is), so no storage limit and no pull secret; `cleanup.yml` keeps 10 versions each. |
 | Voice/OCR tooling | **Decided:** faster-whisper `base` + Piper (own OpenAI-compatible server, profile `voice`), Tesseract for scanned PDFs and images ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)). |
-| Workflows not built | Calendar (5) and web research (6) need MCP servers (time/calendar, web-search, fetch) and, for the calendar, your account's credentials; chat memory (1) needs a memory MCP. Tracked as follow-up work. |
-| Email/Calendar access | Requires OAuth credentials for the chosen provider; store as Kubernetes Secrets. |
+| Workflows not built | **Resolved:** memory (1), calendar (5), web research (6) and planning (7) are built ([6.19](#619-memory-calendar-web-research-and-planning-agent)); all ten workflows run. |
+| Email/Calendar access | The calendar reads `.ics` files and read-only feed URLs (a Secret), so no OAuth is needed; adding events writes the local `agent.ics`, not Google/Outlook. Two-way sync or an IMAP mailbox for workflow 4 would need the provider's OAuth credentials as Secrets. |
+| Web research privacy | The only feature that sends data off the laptop: search queries go to the search engines through SearXNG, and pages are fetched from their sites. It's in its own profile (`research`), off unless you turn it on. |
+| Multi-step latency | A planned request (workflow 7) takes 57–98 s on CPU against a 15–30 s target: one call to plan, then a model round trip per tool, plus a nudge when the model stops early. A larger model or a GPU would cut the round trips. |
 | 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
 | Image sizes | Our images total 3.6 GB on disk after the shared `ml-base` (5.1 GB before); `pipelines` (Dagster + Evidently) is still 1.8 GB. The k3s image store was 26 GB before `k3s crictl rmi --prune` (19 GB after, mostly third-party: Open WebUI, LiteLLM). |
+| Spam model scope | The message-triage model is trained on SMS spam (prize, premium-number, "text WIN to..." messages) and catches those well (test F1 0.976). Phishing e-mails ("your account is locked, verify at paypa1-verify.top") score as ham (~0.33): the training data has no e-mail phishing. Fix: add an e-mail phishing dataset to the pipeline (same Dagster/Optuna/MLflow path), or let the LLM step in workflow 4 flag suspicious links. Until then, treat a "not spam" verdict on an e-mail as "not known spam". |
 | Nightly training | Runs only if the platform is up at 02:00; missed nights aren't replayed. Same data + fixed seed give the same score, so the champion only changes when the data or the search space does. |
 | Single sign-on | **Resolved:** every UI is behind Authelia over HTTPS ([6.14](#614-single-sign-on-and-https-authelia)). One factor (password) for now; switch the rule to `two_factor` before exposing anything beyond this PC. The local CA's private key (`/var/lib/local-ai-ca`, root-only in WSL) can sign certificates your browser trusts: keep it there, and remove the CA with `windows-trust-ca.ps1 -Remove` if you retire the platform. |
 | RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |

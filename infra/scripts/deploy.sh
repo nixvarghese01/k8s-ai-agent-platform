@@ -72,6 +72,10 @@ if [ -z "$(kubectl -n auth get secret authelia-secrets -o jsonpath='{.data.oidc-
     \"oidc-argocd-secret\":\"$(b64 "$client")\",
     \"oidc-argocd-digest\":\"$(b64 "$digest")\"}}" >/dev/null
 fi
+# SearXNG (the agent's web search) signs its own cookies and tokens with this
+if ! kubectl -n agent get secret searxng-secret >/dev/null 2>&1; then
+  kubectl -n agent create secret generic searxng-secret --from-literal=secret="$(rand 32)"
+fi
 # n8n encrypts its stored credentials with this key; losing it means re-entering them
 if ! kubectl -n automation get secret n8n-secret >/dev/null 2>&1; then
   kubectl -n automation create secret generic n8n-secret --from-literal=encryption-key="$(rand 24)"
@@ -111,6 +115,9 @@ kubectl -n ui rollout status deploy/headlamp --timeout=5m
 kubectl -n agent rollout status deploy/mcp-filesystem --timeout=5m
 kubectl -n agent rollout status deploy/mcp-rag --timeout=5m
 kubectl -n agent rollout status deploy/mcp-triage --timeout=5m
+kubectl -n agent rollout status deploy/mcp-memory --timeout=5m
+kubectl -n agent rollout status deploy/mcp-calendar --timeout=5m
+kubectl -n agent rollout status deploy/mcp-web --timeout=5m
 kubectl -n agent rollout status deploy/agent --timeout=5m
 kubectl -n ui rollout status deploy/agent-ui --timeout=5m
 kubectl -n mlops rollout status deploy/mlflow --timeout=5m

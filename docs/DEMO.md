@@ -5,7 +5,7 @@ last. Every step was run on the reference laptop (CPU only); the times are what 
 
 ## Before you record
 
-1. Start everything: `.\local-up -Profile mlops,observability,automation,gitops,voice`
+1. Start everything: `.\local-up -Profile mlops,observability,automation,gitops,voice,research`
    (about 2 minutes; `.\infra\scripts\platform.ps1 status` should be all green).
 2. Sign in once at https://auth.ai.local with your own login (`.\infra\scripts\platform.ps1 set-login`).
 3. Warm the models so the recording isn't waiting on first loads: ask the agent one question at
@@ -24,6 +24,10 @@ last. Every step was run on the reference laptop (CPU only); the times are what 
 | 4 | https://agent.ai.local | Ask **"What was decided in the meeting on 2026-10-01?"**, expand the 🔧 line | 3 decisions + `Sources: notes/meeting-2026-10-01.md:1-6`, ~7 s |
 | 5 | same | Ask **"How much rent did I pay for October, and when?"** | 5,000 AED on 3 October, `Sources: docs/scans/rent-receipt.pdf p.1` (OCR), ~7 s |
 | 6 | same | Ask **"Is this message spam? 'URGENT: your account is locked, reply with your PIN'"** | `classify_message` → SPAM with confidence, ~11 s |
+| 6a | same | **"Remember that my manager is Maria Lopez"**, then **New chat** and **"Who is my manager?"** | stored at once; answered in a new conversation in ~3 s |
+| 6b | same | **"Add a dentist appointment on Monday at 10am"**, then **"What's on my calendar next week?"** | `add_event`, then `list_events` shows it, ~10–16 s each |
+| 6c | same (profile `research` on) | **"Search the web for the latest Kubernetes release"** | answer citing [1] with the link, ~18 s |
+| 6d | same | **"List the files in my shared folder and then tell me what my to-do list says"** | `plan` → `list_dir` → `read_file`; slow on CPU (~1–1.5 min) |
 | 7 | https://chat.ai.local | Click the microphone, say **"When is my gym membership renewal due?"**, send; click the speaker on the answer | transcribed in ~3 s; answer read aloud |
 | 8 | https://phoenix.ai.local → project `agent` | Open the trace of question 4: LangGraph → retrieve → search_documents → answer → model call | every step with timings |
 | 9 | https://grafana.ai.local | *Platform overview*: memory and CPU by namespace, requests per UI | live panels |
@@ -37,6 +41,7 @@ last. Every step was run on the reference laptop (CPU only); the times are what 
 ## Honest notes for the voice-over
 - Everything is CPU-only: answers take seconds, not milliseconds; the README states the targets
   and the measured times side by side.
-- Calendar and web research (workflows 5 and 6) aren't built; say so if asked.
+- The calendar reads `.ics` files and feeds; it doesn't write back to Google/Outlook. Web
+  research is the one feature that leaves the laptop (search queries), so it has its own profile.
 - One login for everything: Open WebUI, n8n and Grafana take the user from Authelia's headers, ArgoCD
   signs in over OpenID Connect, Headlamp gets its token from Traefik (README §6.14).

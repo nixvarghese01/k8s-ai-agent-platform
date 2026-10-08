@@ -50,9 +50,9 @@ jobs:
           curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.8.0/kubeconform-linux-amd64.tar.gz | tar xz kubeconform
           # CRDs (Traefik, ArgoCD, k3s HelmChartConfig) from the community catalog; anything
           # it doesn't know is skipped rather than failed
-          # kustomization.yaml and trim.yaml are kustomize inputs (a delete patch), not resources
+          # kustomization.yaml, trim.yaml and sso.yaml are kustomize inputs (patches), not resources
           ./kubeconform -strict -summary -ignore-missing-schemas -kubernetes-version 1.36.0 \
-            -ignore-filename-pattern '(kustomization|trim)\.yaml' \
+            -ignore-filename-pattern '(kustomization|trim|sso)\.yaml' \
             -schema-location default \
             -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
             infra/k3s infra/argocd

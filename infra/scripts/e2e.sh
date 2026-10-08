@@ -6,7 +6,7 @@
 # Run inside Ubuntu:  bash infra/scripts/e2e.sh   (or: make e2e)
 set -uo pipefail
 export KUBECONFIG=${KUBECONFIG:-$([ "$EUID" -eq 0 ] && echo /etc/rancher/k3s/k3s.yaml || echo ~/.kube/config)}
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../.." || exit 1
 fails=0
 
 echo "== cluster"
@@ -53,7 +53,9 @@ check("litellm chat", lambda: ok("ok" in httpx.post(L + "/v1/chat/completions", 
 check("litellm embeddings", lambda: ok(len(httpx.post(L + "/v1/embeddings", headers=H, timeout=120, json={"model": "embed-default", "input": "hello"}).json()["data"][0]["embedding"]) == 768, "768 dims"))
 
 print("== agent")
-check("tools", lambda: ok({"list_dir", "read_file", "search_files", "search_documents", "classify_message"} <= {t["name"] for t in httpx.get(A + "/tools", timeout=60).json()["tools"]}, "5 MCP tools loaded"))
+TOOLS = {"list_dir", "read_file", "search_files", "search_documents", "classify_message", "remember", "recall",
+         "forget", "now", "list_events", "add_event", "web_search", "fetch_page", "research"}
+check("tools", lambda: ok(TOOLS <= {t["name"] for t in httpx.get(A + "/tools", timeout=60).json()["tools"]}, f"{len(TOOLS)} MCP tools loaded"))
 def files():
     d, tools = chat("What files are in my shared folder?")
     return ok("list_dir" in tools and "meeting" in d["answer"], f"list_dir, {d['seconds']}s")
@@ -70,6 +72,28 @@ def spam():
     d, tools = chat("Is this message spam? 'URGENT: your account is locked, reply with your PIN to unlock it'")
     return ok(tools == ["classify_message"] and "SPAM" in json.dumps(d["steps"]), f"classify_message -> spam, {d['seconds']}s")
 check("spam check (agent tool)", spam)
+def memory():  # stores a test fact, asks for it, then deletes it again
+    chat("Remember that the e2e check code is 4711")
+    try:
+        d, tools = chat("What is the e2e check code?")
+        return ok("4711" in d["answer"] and any(s["tool"] == "recall (auto)" for s in d["steps"]), f"remembered across conversations, {d['seconds']}s")
+    finally:
+        chat("Forget that the e2e check code is 4711")
+check("memory (workflow 1)", memory)
+def calendar():
+    d, tools = chat("What's on my calendar this week?")
+    return ok("list_events" in tools, f"list_events, {d['seconds']}s")
+check("calendar (workflow 5)", calendar)
+def research():
+    d, tools = chat("Search the web for the latest Kubernetes release")
+    if "research profile" in d["answer"]:
+        raise httpx.ConnectError("research profile off")
+    return ok("Sources:" in d["answer"] and "http" in d["answer"], f"answer with links, {d['seconds']}s")
+check("web research (workflow 6)", research)
+def planned():
+    d, tools = chat("List the files in my shared folder and then tell me what my to-do list says")
+    return ok("plan" in tools and "read_file" in tools, f"{' -> '.join(tools)}, {d['seconds']}s")
+check("multi-step plan (workflow 7)", planned)
 
 print("== documents")
 Q = "http://qdrant.storage.svc.cluster.local:6333"

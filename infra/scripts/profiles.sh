@@ -9,11 +9,12 @@
 #   profiles.sh apply         re-apply the stored choice (deploy.sh and `up` run this)
 #
 # Profiles: mlops (Postgres, SeaweedFS, MLflow, Dagster, model serving), observability
-# (tracing, metrics), automation (n8n), voice (speech-to-text, text-to-speech), gitops (ArgoCD).
+# (tracing, metrics), automation (n8n), voice (speech-to-text, text-to-speech), gitops (ArgoCD),
+# research (SearXNG web search for the agent).
 # A label value lists every profile that needs the Deployment, dot-separated (mlops.automation).
 set -euo pipefail
 export KUBECONFIG=${KUBECONFIG:-$([ "$EUID" -eq 0 ] && echo /etc/rancher/k3s/k3s.yaml || echo ~/.kube/config)}
-KNOWN="mlops observability automation voice gitops"
+KNOWN="mlops observability automation voice gitops research"
 
 stored() { kubectl -n kube-system get configmap platform-profiles -o jsonpath='{.data.active}' 2>/dev/null || true; }
 
