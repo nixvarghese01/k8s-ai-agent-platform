@@ -1,0 +1,11 @@
+# Traefik serves this certificate (*.ai.local, from the platform's local CA) for every HTTPS
+# request, so ingresses only need `router.tls: "true"`. The Secret itself is created by
+# infra/scripts/host/06-local-tls.sh and never stored in Git (README §6.14).
+apiVersion: traefik.io/v1alpha1
+kind: TLSStore
+metadata:
+  name: default # Traefik only uses the store named "default"
+  namespace: kube-system
+spec:
+  defaultCertificate:
+    secretName: platform-tls

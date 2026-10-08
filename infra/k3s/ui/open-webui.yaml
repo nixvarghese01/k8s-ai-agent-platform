@@ -1,0 +1,169 @@
+# Open WebUI chat, backed by LiteLLM (LLM + embeddings, served by host Ollama) and Qdrant (RAG vectors).
+# UI: https://chat.ai.local (see ingress/ingresses.yaml), signed in by the platform login.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: open-webui-data
+  namespace: ui
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: open-webui
+  namespace: ui
+  labels:
+    app: open-webui
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: open-webui
+  template:
+    metadata:
+      labels:
+        app: open-webui
+    spec:
+      containers:
+        - name: open-webui
+          image: ghcr.io/open-webui/open-webui:v0.11.4
+          ports:
+            - name: http
+              containerPort: 8080
+          # Settings come from these env vars on every start, not from Open WebUI's database:
+          # this file is the source of truth. Admin-panel changes last until the next restart;
+          # to keep one, add its env var here. Users, chats and documents still persist.
+          env:
+            - name: ENABLE_PERSISTENT_CONFIG
+              value: "false"
+            # Accounts: the first one created is admin; nobody else can sign up
+            - name: ENABLE_SIGNUP
+              value: "false"
+            # Sign-on: the platform login (Authelia) passes the user's e-mail; Open WebUI signs
+            # into the account with that address, and creates it on first visit (README §6.14).
+            # Only Traefik sets these headers after Authelia checked the session.
+            - name: WEBUI_AUTH_TRUSTED_EMAIL_HEADER
+              value: Remote-Email
+            - name: WEBUI_AUTH_TRUSTED_NAME_HEADER
+              value: Remote-Name
+            - name: WEBUI_AUTH_SIGNOUT_REDIRECT_URL
+              value: https://auth.ai.local/logout
+            # Created by infra/scripts/deploy.sh; without it the key is regenerated on every
+            # start and everyone is logged out
+            - name: WEBUI_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: open-webui-secret
+                  key: WEBUI_SECRET_KEY
+            # All models come through LiteLLM (llm/litellm.yaml), not straight from Ollama
+            - name: ENABLE_OLLAMA_API
+              value: "false"
+            - name: ENABLE_OPENAI_API
+              value: "true"
+            - name: OPENAI_API_BASE_URL
+              value: http://litellm.llm.svc.cluster.local:4000/v1
+            - name: OPENAI_API_KEY
+              value: sk-local # LiteLLM runs without a key; Open WebUI just needs a value
+            - name: DEFAULT_MODELS
+              value: chat-default
+            # Voice (README section 6.18): microphone -> Whisper, read-aloud -> Piper, both on the
+            # voice server in the voice profile. With the profile off, those two buttons fail;
+            # typing works as always.
+            - name: AUDIO_STT_ENGINE
+              value: openai
+            - name: AUDIO_STT_OPENAI_API_BASE_URL
+              value: http://voice.voice.svc.cluster.local:8000/v1
+            - name: AUDIO_STT_OPENAI_API_KEY
+              value: local # required by the form, unused
+            - name: AUDIO_STT_MODEL
+              value: whisper-1
+            - name: AUDIO_TTS_ENGINE
+              value: openai
+            - name: AUDIO_TTS_OPENAI_API_BASE_URL
+              value: http://voice.voice.svc.cluster.local:8000/v1
+            - name: AUDIO_TTS_OPENAI_API_KEY
+              value: local
+            - name: AUDIO_TTS_MODEL
+              value: tts-1
+            - name: AUDIO_TTS_VOICE
+              value: en_US-amy-medium
+            - name: VECTOR_DB
+              value: qdrant
+            - name: QDRANT_URI
+              value: http://qdrant.storage.svc.cluster.local:6333
+            # Embed through LiteLLM (nomic-embed-text on Ollama) instead of downloading a
+            # sentence-transformers model
+            - name: RAG_EMBEDDING_ENGINE
+              value: openai
+            - name: RAG_OPENAI_API_BASE_URL
+              value: http://litellm.llm.svc.cluster.local:4000/v1
+            - name: RAG_OPENAI_API_KEY
+              value: sk-local
+            - name: RAG_EMBEDDING_MODEL
+              value: embed-default
+            - name: ANONYMIZED_TELEMETRY
+              value: "false"
+          volumeMounts:
+            - name: data
+              mountPath: /app/backend/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 10
+            failureThreshold: 60 # first start runs DB migrations; allow up to 10 min
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: open-webui-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: open-webui
+  namespace: ui
+spec:
+  selector:
+    app: open-webui
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+---
+# Open WebUI trusts the Remote-Email header (sign-on), so only Traefik may reach it: it runs on
+# the host network, which k3s's network policy always lets through. Pods get nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: open-webui-via-traefik
+  namespace: ui
+spec:
+  podSelector:
+    matchLabels:
+      app: open-webui
+  policyTypes: [Ingress]

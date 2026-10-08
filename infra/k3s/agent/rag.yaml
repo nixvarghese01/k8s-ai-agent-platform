@@ -1,0 +1,148 @@
+# Week 3 RAG (README §6.12): the rag-index CronJob embeds the shared folder into Qdrant
+# (collection "docs", via LiteLLM embed-default); the mcp-rag server gives the agent a
+# search_documents tool over it. Both run the local-ai/mcp-rag image (`make images`).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rag-config
+  namespace: agent
+data:
+  LLM_BASE_URL: http://litellm.llm.svc.cluster.local:4000/v1
+  EMBED_MODEL: embed-default # changing it changes the vectors: run `make rag-index ARGS=--rebuild`
+  QDRANT_URL: http://qdrant.storage.svc.cluster.local:6333
+  COLLECTION: docs
+  FILES_ROOT: /data
+  CHUNK_TOKENS: "256"
+  CHUNK_OVERLAP: "32"
+  TOP_K: "4"
+  MIN_SCORE: "0.6" # see rag_server.py for how these were picked
+  SCORE_MARGIN: "0.05"
+---
+# Search server: MCP streamable HTTP at http://mcp-rag.agent.svc.cluster.local:8000/mcp
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-rag
+  namespace: agent
+  labels:
+    app: mcp-rag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-rag
+  template:
+    metadata:
+      labels:
+        app: mcp-rag
+    spec:
+      containers:
+        - name: mcp-rag
+          image: ghcr.io/nixvarghese01/local-ai-mcp-rag:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:d0e22ff4d44352adc7025462189f7d029670f5a1725586aa6a2ca9c49f5fa4b4
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: rag-config
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 20m
+              memory: 160Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-rag
+  namespace: agent
+spec:
+  selector:
+    app: mcp-rag
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# Indexer: every 15 min while the platform is up. Unchanged files are skipped (sha256), so a
+# run with nothing new takes a few seconds. Run now: `make rag-index`.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: rag-index
+  namespace: agent
+spec:
+  schedule: "*/15 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 600 # after `up`, don't replay the runs missed while the laptop was off
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 3600
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app: rag-index
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: rag-index
+              image: ghcr.io/nixvarghese01/local-ai-mcp-rag:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:d0e22ff4d44352adc7025462189f7d029670f5a1725586aa6a2ca9c49f5fa4b4
+              imagePullPolicy: IfNotPresent
+              command: ["python", "rag_index.py"]
+              envFrom:
+                - configMapRef:
+                    name: rag-config
+              securityContext:
+                runAsNonRoot: true
+                readOnlyRootFilesystem: true
+                allowPrivilegeEscalation: false
+              volumeMounts:
+                - name: files
+                  mountPath: /data
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 192Mi
+                limits:
+                  cpu: "1"
+                  memory: 768Mi
+          volumes:
+            # Same shared folder as the filesystem MCP server (agent/agent.yaml): E:\ai-files
+            - name: files
+              hostPath:
+                path: /mnt/e/ai-files
+                type: Directory
+            - name: tmp
+              emptyDir: {}

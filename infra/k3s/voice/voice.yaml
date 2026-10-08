@@ -1,0 +1,100 @@
+# Voice server (README section 6.18), profile voice: OpenAI-compatible speech-to-text
+# (faster-whisper "base", int8 on CPU) and text-to-speech (Piper en_US-amy-medium) for Open
+# WebUI's microphone and read-aloud buttons, and for anything else that speaks the OpenAI audio
+# API. Models download into the volume on first use (~200 MB).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: voice-models
+  namespace: voice
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: voice
+  namespace: voice
+  labels:
+    app: voice
+    local-ai/profile: voice # off unless the voice profile is on (scripts/profiles.sh)
+spec:
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: voice
+  template:
+    metadata:
+      labels:
+        app: voice
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: voice
+          image: ghcr.io/nixvarghese01/local-ai-voice:sha-d8dac62564e524c311b5e9bf3a163b76ea754911@sha256:4d6dd84f4bf2ef776103f9aa91d0655c075673182f1a9427d8f5f2bbac9430ef
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WHISPER_MODEL
+              value: base # tiny = faster, small = more accurate (and ~2x slower)
+            - name: PIPER_VOICE
+              value: en_US-amy-medium
+            - name: CPU_THREADS
+              value: "4"
+          ports:
+            - name: http
+              containerPort: 8000
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: models
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 20m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: voice-models
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: voice
+  namespace: voice
+spec:
+  selector:
+    app: voice
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

@@ -1,0 +1,50 @@
+# Sign-on (README §7): ArgoCD signs in through Authelia over OpenID Connect, so the platform
+# login is the only one. "Log in via Authelia" on argocd.ai.local goes straight through while
+# you're signed in. The admin user stays as a fallback (make argocd-password).
+#   Client secret: Secret argocd/argocd-oidc, Authelia's copy (a digest) in auth/authelia-secrets;
+#   both from deploy.sh / install.sh. The local CA: ConfigMap argocd/local-ai-ca (install.sh).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+data:
+  url: https://argocd.ai.local
+  oidc.config: |
+    name: Authelia
+    issuer: https://auth.ai.local
+    clientID: argocd
+    clientSecret: $argocd-oidc:clientSecret
+    requestedScopes: [openid, profile, email, groups]
+---
+# Authelia's "admins" group (set-login puts the user there) is ArgoCD admin; others read only
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+data:
+  policy.default: role:readonly
+  policy.csv: |
+    g, admins, role:admin
+  scopes: "[groups]"
+---
+# The server fetches Authelia's keys over HTTPS: trust the platform's local CA as well
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-server
+spec:
+  template:
+    spec:
+      containers:
+        - name: argocd-server
+          env:
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/local-ai-ca
+          volumeMounts:
+            - name: local-ai-ca
+              mountPath: /local-ai-ca
+      volumes:
+        - name: local-ai-ca
+          configMap:
+            name: local-ai-ca
+            optional: true # without it only the SSO button fails, not the server

@@ -1,0 +1,90 @@
+# Week 5 model serving (README §6.15): BentoML serves models:/message-triage@champion from MLflow
+# at http://triage.mlops.svc.cluster.local:3000 (POST /classify, /model; Swagger UI at
+# https://triage.ai.local). Part of the mlops profile. Image local-ai/serving (`make images`).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: triage
+  namespace: mlops
+  labels:
+    app: triage
+    local-ai/profile: mlops # off unless the mlops profile is on (scripts/profiles.sh)
+spec:
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
+  selector:
+    matchLabels:
+      app: triage
+  template:
+    metadata:
+      labels:
+        app: triage
+      annotations: # request counts and latency for Prometheus / Grafana (observability profile)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: triage
+          image: ghcr.io/nixvarghese01/local-ai-serving:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:d35435dcba32905e1e5469ebd758b0325844301177d3c2b1f6f5bc0d38f0f112
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            - name: MLFLOW_TRACKING_URI
+              value: http://mlflow.mlops.svc.cluster.local:5000
+            - name: S3_ENDPOINT_URL # request log for the drift report (bucket triage)
+              value: http://seaweedfs.storage.svc.cluster.local:8333
+            - name: AWS_REGION
+              value: us-east-1
+          envFrom:
+            - secretRef:
+                name: s3-credentials
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 20m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          # Loads the model from MLflow at start; MLflow must be up first (same profile)
+          startupProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            periodSeconds: 30
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: triage
+  namespace: mlops
+spec:
+  selector:
+    app: triage
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

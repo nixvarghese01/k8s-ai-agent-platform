@@ -1,0 +1,304 @@
+# Host-based routing through k3s's bundled Traefik, HTTPS only (README §6.14). Each name needs a
+# Windows hosts-file entry (§6.7). An Ingress must live in its Service's namespace.
+# Every UI is behind single sign-on: the router.middlewares annotation sends each request to
+# Authelia first (auth/authelia.yaml); only auth.ai.local itself, the sign-in page, is open.
+# TLS: router.tls uses Traefik's default certificate, *.ai.local (ingress/tls.yaml).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: auth
+  namespace: auth
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: auth.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: authelia
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: chat
+  namespace: ui
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: chat.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: open-webui
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: llm
+  namespace: llm
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: llm.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: litellm
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: qdrant
+  namespace: storage
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: qdrant.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: qdrant
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agent
+  namespace: ui
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: agent.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: agent-ui
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: headlamp
+  namespace: ui
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    # After the platform login, Traefik adds Headlamp's ServiceAccount token (Middleware
+    # ui/headlamp-token, made by deploy.sh because it holds the token): no token prompt
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd,ui-headlamp-token@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: headlamp.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: headlamp
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: mlflow
+  namespace: mlops
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: mlflow.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: mlflow
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: dagster
+  namespace: mlops
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: dagster.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: dagster-webserver
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: s3
+  namespace: storage
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: s3.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: seaweedfs
+                port:
+                  name: admin
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: triage
+  namespace: mlops
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: triage.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: triage
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: phoenix
+  namespace: observability
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: phoenix.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: phoenix
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: grafana
+  namespace: observability
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: grafana.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: grafana
+                port:
+                  name: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: n8n
+  namespace: automation
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls: "true"
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: n8n.ai.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: n8n
+                port:
+                  name: http

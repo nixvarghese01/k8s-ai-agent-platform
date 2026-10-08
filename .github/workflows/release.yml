@@ -1,0 +1,83 @@
+# Release (CONTRIBUTING.md "Releases"): every merge into main is a release, from development or a
+# hotfix/* branch. The version is the newest "## [X.Y.Z]" section of CHANGELOG.md. This tags the
+# merge commit vX.Y.Z, gives the images it runs (the digests pinned in infra/k3s) the tags
+# vX.Y.Z and latest, and publishes the GitHub release with that changelog section as its notes.
+# Nothing is rebuilt: main runs exactly the images that were tested on development or the hotfix.
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # the tag and the release
+  packages: write # the version tags on the images
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: tag and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # the existing tags
+
+      - name: Version from CHANGELOG.md
+        id: version
+        run: |
+          version=$(grep -m1 -oP '^## \[\K[0-9]+\.[0-9]+\.[0-9]+(?=\])' CHANGELOG.md || true)
+          if [ -z "$version" ]; then
+            echo "::error::CHANGELOG.md has no '## [X.Y.Z] - <date>' section"; exit 1
+          fi
+          tag="v$version"
+          if existing=$(git rev-parse -q --verify "refs/tags/$tag^{commit}"); then
+            if [ "$existing" = "$GITHUB_SHA" ]; then
+              echo "$tag already points at this commit: nothing to do"
+              echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+            echo "::error::$tag is already released ($existing). Add a new version section to CHANGELOG.md."; exit 1
+          fi
+          # the section's lines up to the next "## [", without the link references at the end
+          awk -v head="## [$version]" '/^## \[/ { p = index($0, head) == 1; next } p' CHANGELOG.md \
+            | grep -vE '^\[[^]]+\]: https?://' > notes.md
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.version.outputs.skip == 'false'
+      - uses: docker/login-action@v4
+        if: steps.version.outputs.skip == 'false'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Tag the pinned images with the version
+        if: steps.version.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          grep -rhoE "ghcr\.io/${GITHUB_REPOSITORY_OWNER,,}/local-ai-[a-z0-9-]+:[^@[:space:]]+@sha256:[0-9a-f]{64}" infra/k3s \
+            | sort -u | while read -r ref; do
+              repo=${ref%%:*}
+              echo "$repo@${ref#*@} -> $TAG, latest"
+              docker buildx imagetools create -t "$repo:$TAG" -t "$repo:latest" "$repo@${ref#*@}"
+            done
+
+      - name: Tag the commit and publish the release
+        if: steps.version.outputs.skip == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$TAG"
+          gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md

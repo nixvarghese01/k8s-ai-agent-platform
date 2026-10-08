@@ -1,0 +1,214 @@
+# Authelia: single sign-on for every *.ai.local UI (README §6.14). Traefik asks it about each
+# request (Middleware auth/authelia below, referenced by every ingress); without a session the
+# browser goes to https://auth.ai.local to sign in once, and the session cookie on ai.local
+# then opens every UI until it expires. Apps with a login of their own take the user from
+# Authelia too: Grafana, Open WebUI and n8n from the Remote-* headers, ArgoCD over OpenID
+# Connect, Headlamp from a token Traefik adds, SeaweedFS has its password switched off.
+#   Users: Secret auth/authelia-users (users_database.yml, argon2 hashes), set with
+#          `.\infra\scripts\platform.ps1 set-login` (Windows) or `make set-login` (Ubuntu)
+#   Secrets for sessions/storage: Secret auth/authelia-secrets, created once by deploy.sh
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: authelia-config
+  namespace: auth
+data:
+  configuration.yml: |
+    server:
+      address: tcp://0.0.0.0:9091/
+    log:
+      level: info
+    theme: auto
+    totp:
+      issuer: Local AI Platform # for 2FA later: set the rule below to two_factor
+    authentication_backend:
+      password_reset:
+        disable: true # no mail server; reset with set-login instead
+      file:
+        path: /config/users/users_database.yml
+        watch: true # picks up set-login changes without a restart
+        password:
+          algorithm: argon2
+    access_control:
+      default_policy: deny
+      rules:
+        - domain: "*.ai.local"
+          policy: one_factor
+    session:
+      cookies:
+        - domain: ai.local
+          authelia_url: https://auth.ai.local
+          default_redirection_url: https://chat.ai.local
+      expiration: 12h
+      inactivity: 2h
+      remember_me: 1M
+    regulation: # 5 wrong passwords in 2 minutes lock the user out for 10
+      max_retries: 5
+      find_time: 2m
+      ban_time: 10m
+    storage:
+      local:
+        path: /data/db.sqlite3
+    notifier:
+      filesystem:
+        filename: /data/notification.txt
+    # OpenID Connect for apps that only trust their own login otherwise (ArgoCD). Signing key,
+    # HMAC secret and client secret digests come from Secret auth/authelia-secrets (deploy.sh)
+    # through the template filter. ArgoCD reaches https://auth.ai.local in-cluster through the
+    # CoreDNS rewrite in ingress/in-cluster-dns.yaml.
+    identity_providers:
+      oidc:
+        jwks:
+          - key_id: main
+            algorithm: RS256
+            use: sig
+            key: {{ secret "/secrets/oidc-jwks-key" | mindent 10 "|" | msquote }}
+        clients:
+          - client_id: argocd
+            client_name: Argo CD
+            client_secret: '{{ secret "/secrets/oidc-argocd-digest" }}'
+            authorization_policy: one_factor
+            consent_mode: implicit # same user, same machine: no "allow Argo CD?" screen
+            redirect_uris: [https://argocd.ai.local/auth/callback]
+            scopes: [openid, profile, email, groups]
+            token_endpoint_auth_method: client_secret_basic
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: authelia-data
+  namespace: auth
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: authelia
+  namespace: auth
+  labels:
+    app: authelia
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # SQLite on a ReadWriteOnce volume
+  selector:
+    matchLabels:
+      app: authelia
+  template:
+    metadata:
+      labels:
+        app: authelia
+    spec:
+      # Kubernetes would inject AUTHELIA_PORT=tcp://... etc. for the Service named authelia, and
+      # Authelia reads every AUTHELIA_* variable as configuration: it then refuses to start
+      enableServiceLinks: false
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: authelia
+          # Pinned like LiteLLM: change tag + digest deliberately, apply, sign in again
+          image: ghcr.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
+          args: ["--config", "/config/configuration.yml"]
+          env:
+            - name: X_AUTHELIA_CONFIG_FILTERS
+              value: template # {{ secret "..." }} in the config reads the OIDC secrets
+            - name: AUTHELIA_IDENTITY_PROVIDERS_OIDC_HMAC_SECRET_FILE
+              value: /secrets/oidc-hmac-secret
+            - name: AUTHELIA_SESSION_SECRET_FILE
+              value: /secrets/session-secret
+            - name: AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE
+              value: /secrets/storage-encryption-key
+            - name: AUTHELIA_IDENTITY_VALIDATION_RESET_PASSWORD_JWT_SECRET_FILE
+              value: /secrets/jwt-secret
+          ports:
+            - name: http
+              containerPort: 9091
+          securityContext:
+            runAsNonRoot: true
+            # Authelia rewrites /app/.healthcheck.env (for the image's Docker HEALTHCHECK) on
+            # every start and aborts if it can't. It runs as uid 1000, and /app is root-owned
+            # apart from that one world-writable file, so this only allows that write.
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: config
+              mountPath: /config/configuration.yml
+              subPath: configuration.yml
+              readOnly: true
+            - name: users
+              mountPath: /config/users # a directory mount, so set-login updates reach the pod
+              readOnly: true
+            - name: secrets
+              mountPath: /secrets
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: authelia-config
+        - name: users
+          secret:
+            secretName: authelia-users
+        - name: secrets
+          secret:
+            secretName: authelia-secrets
+        - name: data
+          persistentVolumeClaim:
+            claimName: authelia-data
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: authelia
+  namespace: auth
+spec:
+  selector:
+    app: authelia
+  ports:
+    - name: http
+      port: 9091
+      targetPort: http
+---
+# Every protected ingress carries the annotation
+#   traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: authelia
+  namespace: auth
+spec:
+  forwardAuth:
+    address: http://authelia.auth.svc.cluster.local:9091/api/authz/forward-auth
+    trustForwardHeader: true
+    authResponseHeaders: [Remote-User, Remote-Groups, Remote-Email, Remote-Name]

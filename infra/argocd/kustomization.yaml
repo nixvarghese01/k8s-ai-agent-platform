@@ -1,0 +1,37 @@
+# ArgoCD for the platform (README §7), profile gitops. Install / update:
+#   kubectl apply -k infra/argocd     (or: bash infra/argocd/install.sh)
+# Upstream v3.5.4, trimmed for a laptop: no Dex (ArgoCD talks OpenID Connect to Authelia
+# directly, sso.yaml), no notifications, no ApplicationSet controller; the server runs without
+# its own TLS behind Traefik. What's left: server (UI/API), repo-server, application-controller,
+# redis.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: argocd
+resources:
+  - namespace.yaml
+  - https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.4/manifests/install.yaml
+  - ingress.yaml
+  - platform-app.yaml
+patches:
+  - path: trim.yaml
+  - path: sso.yaml
+  - target:
+      kind: Deployment
+      name: argocd-(server|repo-server|redis)
+    patch: &profile |
+      - op: add
+        path: /metadata/labels/local-ai~1profile
+        value: gitops
+  - target:
+      kind: StatefulSet
+      name: argocd-application-controller
+    patch: *profile
+  - target:
+      kind: ConfigMap
+      name: argocd-cmd-params-cm
+    patch: |
+      - op: add
+        path: /data
+        value:
+          server.insecure: "true" # TLS ends at Traefik (*.ai.local certificate)
+          reposerver.parallelism.limit: "1" # one manifest render at a time: gentler on the CPU

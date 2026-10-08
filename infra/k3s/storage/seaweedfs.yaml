@@ -1,0 +1,131 @@
+# SeaweedFS: S3-compatible object storage (replaces MinIO, which went source-only in late 2025;
+# README §6.13). `weed mini` runs master, volume, filer, S3 API and admin UI in one process.
+#   S3 API (in-cluster): http://seaweedfs.storage.svc.cluster.local:8333   buckets: mlflow, dagster
+#   Admin UI: https://s3.ai.local, signed in by the platform login (no password of its own)
+# S3 keys and the admin password live in Secret storage/seaweedfs-secret, created by deploy.sh.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: seaweedfs-data
+  namespace: storage
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: seaweedfs
+  namespace: storage
+  labels:
+    app: seaweedfs
+    local-ai/profile: mlops # off unless the mlops profile is on (scripts/profiles.sh)
+spec:
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: seaweedfs
+  template:
+    metadata:
+      labels:
+        app: seaweedfs
+    spec:
+      securityContext:
+        runAsUser: 1000 # the image's seaweed user; the entrypoint skips its su-exec step
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: seaweedfs
+          # Pinned like LiteLLM: change tag + digest deliberately, apply, check s3.ai.local
+          image: chrislusf/seaweedfs:4.48@sha256:4e61d15fd35994cb1e43e1e553dff106794841fd9a99ade2fc8c8bfce4d7872d
+          args:
+            - mini
+            - -dir=/data
+            - -ip=127.0.0.1 # all in one pod; keeps the volume address stable across restarts
+            - -bucket=mlflow,dagster,triage # created on start if missing (triage: served requests)
+            - -s3.config=/etc/seaweedfs/s3.json
+            # No admin password: the platform login guards https://s3.ai.local, and the
+            # NetworkPolicy below keeps other pods off the admin port. (Dropping the flag took
+            # two restarts: the first one still read it from /data/mini.options.)
+            - -webdav=false
+            - -master.telemetry=false
+            - -master.volumeSizeLimitMB=256 # small volume files suit a laptop disk
+          ports:
+            - name: s3
+              containerPort: 8333
+            - name: admin
+              containerPort: 23646
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: s3-config
+              mountPath: /etc/seaweedfs/s3.json
+              subPath: s3.json
+              readOnly: true
+          resources:
+            requests:
+              cpu: 20m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            tcpSocket:
+              port: s3
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: s3
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: seaweedfs-data
+        - name: s3-config
+          secret:
+            secretName: seaweedfs-secret
+            items:
+              - key: s3.json
+                path: s3.json
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: seaweedfs
+  namespace: storage
+spec:
+  selector:
+    app: seaweedfs
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: s3
+    - name: admin
+      port: 23646
+      targetPort: admin
+---
+# Pods may use the S3 API; the admin UI (no password) is reachable only through Traefik, which
+# runs on the host network, after the platform login
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: seaweedfs-admin-via-traefik
+  namespace: storage
+spec:
+  podSelector:
+    matchLabels:
+      app: seaweedfs
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8333

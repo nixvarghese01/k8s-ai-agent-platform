@@ -1,0 +1,207 @@
+# Grafana at https://grafana.ai.local (README §6.16), profile observability. No second login:
+# Authelia passes the signed-in user in the Remote-User header (auth proxy). The Prometheus
+# datasource and the "Platform overview" dashboard are provisioned from this file; dashboards
+# you make in the UI are kept on the volume.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: observability
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        url: http://prometheus.observability.svc.cluster.local:9090
+        isDefault: true
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: platform
+        folder: Local AI Platform
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: observability
+data:
+  platform-overview.json: |
+    {
+      "uid": "platform-overview",
+      "title": "Platform overview",
+      "tags": ["local-ai"],
+      "timezone": "browser",
+      "refresh": "30s",
+      "time": {"from": "now-3h", "to": "now"},
+      "schemaVersion": 39,
+      "panels": [
+        {"type": "stat", "title": "Running containers", "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+         "targets": [{"expr": "count(container_memory_working_set_bytes{container!=\"\",pod!=\"\"})", "refId": "A"}]},
+        {"type": "stat", "title": "Pods' memory", "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+         "fieldConfig": {"defaults": {"unit": "bytes"}},
+         "targets": [{"expr": "sum(container_memory_working_set_bytes{container!=\"\",pod!=\"\"})", "refId": "A"}]},
+        {"type": "stat", "title": "CPU in use (cores)", "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+         "fieldConfig": {"defaults": {"unit": "none", "decimals": 2}},
+         "targets": [{"expr": "sum(rate(container_cpu_usage_seconds_total{id=\"/\"}[5m]))", "refId": "A"}]},
+        {"type": "stat", "title": "Requests/min through Traefik", "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+         "fieldConfig": {"defaults": {"unit": "none", "decimals": 1}},
+         "targets": [{"expr": "sum(rate(traefik_service_requests_total[5m])) * 60", "refId": "A"}]},
+        {"type": "timeseries", "title": "Memory by namespace", "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+         "fieldConfig": {"defaults": {"unit": "bytes", "custom": {"stacking": {"mode": "normal"}, "fillOpacity": 30}}},
+         "targets": [{"expr": "sum by (namespace) (container_memory_working_set_bytes{container!=\"\",pod!=\"\"})", "legendFormat": "{{namespace}}", "refId": "A"}]},
+        {"type": "timeseries", "title": "CPU by namespace (cores)", "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+         "fieldConfig": {"defaults": {"unit": "none", "custom": {"stacking": {"mode": "normal"}, "fillOpacity": 30}}},
+         "targets": [{"expr": "sum by (namespace) (rate(container_cpu_usage_seconds_total{container!=\"\",pod!=\"\"}[5m]))", "legendFormat": "{{namespace}}", "refId": "A"}]},
+        {"type": "timeseries", "title": "Requests/s by UI (Traefik)", "gridPos": {"x": 0, "y": 12, "w": 12, "h": 8},
+         "fieldConfig": {"defaults": {"unit": "reqps"}},
+         "targets": [{"expr": "sum by (service) (rate(traefik_service_requests_total[5m]))", "legendFormat": "{{service}}", "refId": "A"}]},
+        {"type": "timeseries", "title": "p95 latency by UI (Traefik)", "gridPos": {"x": 12, "y": 12, "w": 12, "h": 8},
+         "fieldConfig": {"defaults": {"unit": "s"}},
+         "targets": [{"expr": "histogram_quantile(0.95, sum by (le, service) (rate(traefik_service_request_duration_seconds_bucket[5m])))", "legendFormat": "{{service}}", "refId": "A"}]},
+        {"type": "bargauge", "title": "Top 10 pods by memory", "gridPos": {"x": 0, "y": 20, "w": 12, "h": 9},
+         "options": {"orientation": "horizontal", "displayMode": "gradient"},
+         "fieldConfig": {"defaults": {"unit": "bytes"}},
+         "targets": [{"expr": "topk(10, sum by (namespace, pod) (container_memory_working_set_bytes{container!=\"\",pod!=\"\"}))", "legendFormat": "{{namespace}}/{{pod}}", "refId": "A", "instant": true}]},
+        {"type": "timeseries", "title": "Message classifier (BentoML): requests/s and p95 latency", "gridPos": {"x": 12, "y": 20, "w": 12, "h": 9},
+         "targets": [
+           {"expr": "sum(rate(bentoml_service_request_total{endpoint=\"/classify\"}[5m]))", "legendFormat": "requests/s", "refId": "A"},
+           {"expr": "histogram_quantile(0.95, sum by (le) (rate(bentoml_service_request_duration_seconds_bucket{endpoint=\"/classify\"}[5m])))", "legendFormat": "p95 seconds", "refId": "B"}]}
+      ]
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: grafana-data
+  namespace: observability
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: observability
+  labels:
+    app: grafana
+    local-ai/profile: observability # off unless the observability profile is on (scripts/profiles.sh)
+spec:
+  # no replicas: profiles.sh scales it (0/1); apply and ArgoCD leave that alone
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      labels:
+        app: grafana
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 472 # the image's grafana user
+        fsGroup: 472
+      containers:
+        - name: grafana
+          # Pinned like LiteLLM: change tag + digest deliberately
+          image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+          env:
+            - name: GF_SERVER_ROOT_URL
+              value: https://grafana.ai.local
+            # Sign-on: trust the user Authelia passes; no Grafana login form at all
+            - name: GF_AUTH_PROXY_ENABLED
+              value: "true"
+            - name: GF_AUTH_PROXY_HEADER_NAME
+              value: Remote-User
+            - name: GF_AUTH_PROXY_HEADER_PROPERTY
+              value: username
+            - name: GF_AUTH_PROXY_AUTO_SIGN_UP
+              value: "true"
+            # Trust the header only from Traefik (host network: the host's address on the pod
+            # network), not from a pod that calls Grafana directly
+            - name: GF_AUTH_PROXY_WHITELIST
+              value: 10.42.0.1
+            - name: GF_USERS_AUTO_ASSIGN_ORG_ROLE
+              value: Admin # single-user platform: the signed-in user may edit dashboards
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "true"
+            - name: GF_ANALYTICS_REPORTING_ENABLED
+              value: "false"
+            - name: GF_ANALYTICS_CHECK_FOR_UPDATES
+              value: "false"
+            - name: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+              value: /var/lib/grafana/dashboards/platform-overview.json
+          ports:
+            - name: http
+              containerPort: 3000
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+              subPath: dashboards.yaml
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards
+          resources:
+            # Grafana 13 sat at ~350 MiB of a 384 MiB limit and timed out its own requests
+            # (dashboards stuck on "Loading", liveness restarts) while the models kept the CPU
+            # busy: more memory and CPU headroom (2026-10-08)
+            requests:
+              cpu: 50m
+              memory: 256Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5 # default 1 s; slow while the models keep the CPU busy
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: grafana-data
+        - name: provisioning
+          configMap:
+            name: grafana-provisioning
+        - name: dashboards
+          configMap:
+            name: grafana-dashboards
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: observability
+spec:
+  selector:
+    app: grafana
+  ports:
+    - name: http
+      port: 3000
+      targetPort: http

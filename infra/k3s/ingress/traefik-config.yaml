@@ -1,0 +1,60 @@
+# Overrides for k3s's bundled Traefik chart.
+# Traefik listens directly on the WSL host's ports 80/443 (hostNetwork) instead of behind
+# servicelb's iptables rules. WSL only forwards Windows localhost to real listening sockets,
+# so this is what makes https://chat.ai.local -> ::1 work from a Windows browser.
+# Plain HTTP redirects to HTTPS (certificate: ingress/tls.yaml). Ingresses in every namespace
+# use the one Authelia middleware in namespace auth, hence allowCrossNamespace (README §6.14).
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    hostNetwork: true
+    deployment:
+      # On the host network the pod would use WSL's resolver and fail to look up in-cluster
+      # names such as authelia.auth.svc.cluster.local (the single sign-on check)
+      dnsPolicy: ClusterFirstWithHostNet
+    # WSL relays these ports to Windows' [::1] only (Traefik's socket is dual-stack IPv6, even
+    # with hostIP 0.0.0.0); windows-hosts.ps1 adds 127.0.0.1 -> [::1] port proxies (README §6.7)
+    ports:
+      web:
+        port: 80
+        http:
+          redirections:
+            entryPoint:
+              to: websecure
+              scheme: https
+              permanent: true
+      websecure:
+        port: 443
+    providers:
+      kubernetesCRD:
+        allowCrossNamespace: true
+      kubernetesIngress:
+        # Write an address into every Ingress' status; without one ArgoCD reports the Ingresses,
+        # and so the whole platform, as "Progressing" forever. 127.0.0.1 is where they're reached.
+        ingressEndpoint:
+          ip: 127.0.0.1
+        publishedService:
+          enabled: false # k3s turns it on; it would copy the (empty) ClusterIP Service status instead
+    service:
+      spec:
+        type: ClusterIP # no servicelb pod competing for 80/443 (chart 40.x: service.spec.type)
+    # Binding ports below 1024 on the host needs root + NET_BIND_SERVICE
+    securityContext:
+      capabilities:
+        drop: [ALL]
+        add: [NET_BIND_SERVICE]
+      readOnlyRootFilesystem: true
+    podSecurityContext:
+      runAsNonRoot: false
+      runAsUser: 0
+      runAsGroup: 0
+    # Host ports can't be shared: stop the old pod before starting the new one
+    updateStrategy:
+      type: RollingUpdate
+      rollingUpdate:
+        maxUnavailable: 1
+        maxSurge: 0

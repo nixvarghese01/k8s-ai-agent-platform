@@ -1,0 +1,254 @@
+# Week 2 file agent (README §6.10): the LangGraph agent API and the filesystem MCP server.
+# Images are built locally and loaded into k3s by infra/scripts/build-images.sh (`make images`),
+# so imagePullPolicy is Never. The UI is ui/agent-ui.yaml.
+#
+# Filesystem MCP server: read-only tools over one folder on the WSL host.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-filesystem
+  namespace: agent
+  labels:
+    app: mcp-filesystem
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-filesystem
+  template:
+    metadata:
+      labels:
+        app: mcp-filesystem
+    spec:
+      containers:
+        - name: mcp-filesystem
+          image: ghcr.io/nixvarghese01/local-ai-mcp-filesystem:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:e8085838d3942a35a4b223a28829741a3a68a25988f04d30554f2886d8cb3451
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: FILES_ROOT
+              value: /data
+            - name: MAX_READ_CHARS
+              value: "8000" # ~2k tokens, so a file fits in chat-tools' context with room to spare
+          volumeMounts:
+            - name: files
+              mountPath: /data
+              readOnly: true
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 20m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        # The agent's shared folder: E:\ai-files on Windows. Change both here to share another one.
+        - name: files
+          hostPath:
+            path: /mnt/e/ai-files
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-filesystem
+  namespace: agent
+spec:
+  selector:
+    app: mcp-filesystem
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# Conversations (LangGraph checkpoints, per thread_id), kept across agent restarts
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: agent-data
+  namespace: agent
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 512Mi
+---
+# Agent API: http://agent.agent.svc.cluster.local:8000 (POST /chat, GET /tools)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent
+  namespace: agent
+  labels:
+    app: agent
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate # SQLite on a ReadWriteOnce volume
+  selector:
+    matchLabels:
+      app: agent
+  template:
+    metadata:
+      labels:
+        app: agent
+    spec:
+      securityContext:
+        fsGroup: 1000 # the image's user writes the conversations volume
+      containers:
+        - name: agent
+          image: ghcr.io/nixvarghese01/local-ai-agent:sha-d8dac62564e524c311b5e9bf3a163b76ea754911@sha256:80564c324fea2ae5cf254bf46100c6832db9edfcc40da60f72f0b4e86154bc87
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: LLM_BASE_URL
+              value: http://litellm.llm.svc.cluster.local:4000/v1
+            - name: LLM_MODEL
+              value: chat-tools
+            # Traces of every agent run (retrieve, model calls, tools) in Phoenix (§6.16);
+            # nothing is sent while the observability profile is off
+            - name: PHOENIX_COLLECTOR_ENDPOINT
+              value: http://phoenix.observability.svc.cluster.local:6006
+            # Add an MCP server here and restart the agent; no code change needed
+            - name: MCP_SERVERS
+              value: |
+                {"filesystem": {"url": "http://mcp-filesystem.agent.svc.cluster.local:8000/mcp"},
+                 "rag": {"url": "http://mcp-rag.agent.svc.cluster.local:8000/mcp"},
+                 "triage": {"url": "http://mcp-triage.agent.svc.cluster.local:8000/mcp"},
+                 "memory": {"url": "http://mcp-memory.agent.svc.cluster.local:8000/mcp"},
+                 "calendar": {"url": "http://mcp-calendar.agent.svc.cluster.local:8000/mcp"},
+                 "web": {"url": "http://mcp-web.agent.svc.cluster.local:8000/mcp"}}
+            - name: CHECKPOINT_DB
+              value: /data/checkpoints.sqlite
+            - name: AGENT_TZ
+              value: Asia/Dubai
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 50m
+              memory: 192Mi
+            limits:
+              cpu: "1"
+              memory: 768Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: agent-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent
+  namespace: agent
+spec:
+  selector:
+    app: agent
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+---
+# Week 5: MCP tool classify_message over the BentoML model server (mlops/serving.yaml). Tiny and
+# always on, so with the mlops profile off the agent still gets a clear answer.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcp-triage
+  namespace: agent
+  labels:
+    app: mcp-triage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mcp-triage
+  template:
+    metadata:
+      labels:
+        app: mcp-triage
+    spec:
+      containers:
+        - name: mcp-triage
+          image: ghcr.io/nixvarghese01/local-ai-mcp-triage:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:484c24971369087c1457f2332151c3c1e4ac631a0a2492a8467369635e498265
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - name: TRIAGE_URL
+              value: http://triage.mlops.svc.cluster.local:3000
+          securityContext:
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+          resources:
+            requests:
+              cpu: 10m
+              memory: 48Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcp-triage
+  namespace: agent
+spec:
+  selector:
+    app: mcp-triage
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

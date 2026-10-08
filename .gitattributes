@@ -1,0 +1,11 @@
+# Keep line endings stable regardless of core.autocrlf on Windows clones.
+* text=auto eol=lf
+
+# Run inside Ubuntu: must stay LF or bash fails with "$'\r': command not found"
+*.sh    text eol=lf
+Makefile text eol=lf
+*.yaml  text eol=lf
+*.yml   text eol=lf
+
+# Windows PowerShell 5.1 scripts
+*.ps1   text eol=crlf

@@ -1,0 +1,129 @@
+#!/bin/bash
+# README §6.5: apply every manifest under infra/k3s and wait for the workloads.
+# Run inside Ubuntu from the repo root:  bash infra/scripts/deploy.sh
+set -euxo pipefail
+export KUBECONFIG=${KUBECONFIG:-~/.kube/config}
+cd "$(dirname "$0")/../.."
+
+kubectl apply -f infra/k3s/namespaces.yaml
+
+# Secrets live only in the cluster, never in Git. Create each one once; keep it on re-deploy.
+set +x
+if ! kubectl -n ui get secret open-webui-secret >/dev/null 2>&1; then
+  # Signs Open WebUI login sessions; a stable key keeps users logged in across restarts
+  kubectl -n ui create secret generic open-webui-secret \
+    --from-literal=WEBUI_SECRET_KEY="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+fi
+
+rand() { head -c "${1:-24}" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+get() { kubectl -n "$1" get secret "$2" -o "jsonpath={.data.$3}" | base64 -d; }
+
+# Postgres passwords (README §6.13). The storage copy feeds Postgres; mlops gets the app ones.
+if ! kubectl -n storage get secret postgres-secret >/dev/null 2>&1; then
+  kubectl -n storage create secret generic postgres-secret --from-literal=POSTGRES_PASSWORD="$(rand)" \
+    --from-literal=MLFLOW_DB_PASSWORD="$(rand)" --from-literal=DAGSTER_DB_PASSWORD="$(rand)"
+fi
+if ! kubectl -n mlops get secret mlops-db >/dev/null 2>&1; then
+  kubectl -n mlops create secret generic mlops-db \
+    --from-literal=MLFLOW_DB_PASSWORD="$(get storage postgres-secret MLFLOW_DB_PASSWORD)" \
+    --from-literal=DAGSTER_DB_PASSWORD="$(get storage postgres-secret DAGSTER_DB_PASSWORD)"
+fi
+
+# SeaweedFS: one S3 key pair for the platform, and the admin UI password
+if ! kubectl -n storage get secret seaweedfs-secret >/dev/null 2>&1; then
+  key=$(rand 10); secret=$(rand 20)
+  s3json=$(printf '{"identities":[{"name":"platform","credentials":[{"accessKey":"%s","secretKey":"%s"}],"actions":["Admin","Read","List","Tagging","Write"]}]}' "$key" "$secret")
+  kubectl -n storage create secret generic seaweedfs-secret --from-literal=s3.json="$s3json" \
+    --from-literal=admin-password="$(rand 12)" --from-literal=access-key="$key" --from-literal=secret-key="$secret"
+fi
+if ! kubectl -n mlops get secret s3-credentials >/dev/null 2>&1; then
+  kubectl -n mlops create secret generic s3-credentials \
+    --from-literal=AWS_ACCESS_KEY_ID="$(get storage seaweedfs-secret access-key)" \
+    --from-literal=AWS_SECRET_ACCESS_KEY="$(get storage seaweedfs-secret secret-key)"
+fi
+
+# HTTPS certificate for *.ai.local (README §6.14), from the local CA; root reads the CA key
+if ! kubectl -n kube-system get secret platform-tls >/dev/null 2>&1 || ! kubectl -n kube-system get configmap local-ai-ca >/dev/null 2>&1; then
+  if [ "$EUID" -eq 0 ]; then
+    bash infra/scripts/host/06-local-tls.sh
+  else
+    echo "No TLS certificate or CA ConfigMap yet: run  wsl -u root -- bash infra/scripts/host/06-local-tls.sh  then deploy again" >&2
+    exit 1
+  fi
+fi
+
+# Single sign-on (Authelia): its own signing/encryption secrets, and a first user to replace
+if ! kubectl -n auth get secret authelia-secrets >/dev/null 2>&1; then
+  kubectl -n auth create secret generic authelia-secrets --from-literal=session-secret="$(rand 32)" \
+    --from-literal=storage-encryption-key="$(rand 32)" --from-literal=jwt-secret="$(rand 32)"
+fi
+# OpenID Connect (ArgoCD's sign-on): Authelia's signing key and HMAC secret, and ArgoCD's client
+# secret with the digest Authelia checks it against. Added once, also to an older authelia-secrets.
+if [ -z "$(kubectl -n auth get secret authelia-secrets -o jsonpath='{.data.oidc-jwks-key}')" ]; then
+  client=$(rand 32)
+  image=$(grep -o 'ghcr.io/authelia/authelia:[^ ]*' infra/k3s/auth/authelia.yaml | head -1)
+  digest=$(kubectl -n auth run "authelia-hash-$RANDOM" --rm -i --quiet --restart=Never --image="$image" \
+    --command -- authelia crypto hash generate pbkdf2 --variant sha512 --password "$client" | sed -n 's/^Digest: //p')
+  [ -n "$digest" ] || { echo "hashing the OIDC client secret failed" >&2; exit 1; }
+  b64() { printf '%s' "$1" | base64 -w0; }
+  kubectl -n auth patch secret authelia-secrets --type merge -p "{\"data\":{
+    \"oidc-jwks-key\":\"$(openssl genrsa 2048 2>/dev/null | base64 -w0)\",
+    \"oidc-hmac-secret\":\"$(b64 "$(rand 32)")\",
+    \"oidc-argocd-secret\":\"$(b64 "$client")\",
+    \"oidc-argocd-digest\":\"$(b64 "$digest")\"}}" >/dev/null
+fi
+# SearXNG (the agent's web search) signs its own cookies and tokens with this
+if ! kubectl -n agent get secret searxng-secret >/dev/null 2>&1; then
+  kubectl -n agent create secret generic searxng-secret --from-literal=secret="$(rand 32)"
+fi
+# n8n encrypts its stored credentials with this key; losing it means re-entering them
+if ! kubectl -n automation get secret n8n-secret >/dev/null 2>&1; then
+  kubectl -n automation create secret generic n8n-secret --from-literal=encryption-key="$(rand 24)"
+fi
+if ! kubectl -n auth get secret authelia-users >/dev/null 2>&1; then
+  bash infra/scripts/set-login.sh --bootstrap
+fi
+set -x
+
+kubectl apply -R -f infra/k3s/
+
+# Headlamp's sign-on: Traefik adds its ServiceAccount token to each request that passed the
+# platform login (ingress headlamp). Made here, not in Git, because it holds the token.
+set +x
+token=$(kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d)
+for _ in $(seq 30); do [ -n "$token" ] && break; sleep 1; token=$(kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d); done
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headlamp-token
+  namespace: ui
+spec:
+  headers:
+    customRequestHeaders:
+      Authorization: "Bearer $token"
+EOF
+set -x
+kubectl -n llm rollout status deploy/litellm --timeout=10m
+kubectl -n storage rollout status deploy/qdrant --timeout=10m
+kubectl -n auth rollout status deploy/authelia --timeout=5m
+kubectl -n storage rollout status deploy/postgres --timeout=5m
+kubectl -n storage rollout status deploy/seaweedfs --timeout=5m
+kubectl -n ui rollout status deploy/open-webui --timeout=15m
+kubectl -n ui rollout status deploy/headlamp --timeout=5m
+# Built locally: run `make images` first (infra/scripts/build-images.sh)
+kubectl -n agent rollout status deploy/mcp-filesystem --timeout=5m
+kubectl -n agent rollout status deploy/mcp-rag --timeout=5m
+kubectl -n agent rollout status deploy/mcp-triage --timeout=5m
+kubectl -n agent rollout status deploy/mcp-memory --timeout=5m
+kubectl -n agent rollout status deploy/mcp-calendar --timeout=5m
+kubectl -n agent rollout status deploy/mcp-web --timeout=5m
+kubectl -n agent rollout status deploy/agent --timeout=5m
+kubectl -n ui rollout status deploy/agent-ui --timeout=5m
+kubectl -n mlops rollout status deploy/mlflow --timeout=5m
+kubectl -n mlops rollout status deploy/dagster-webserver --timeout=5m
+kubectl -n mlops rollout status deploy/dagster-daemon --timeout=5m
+kubectl -n voice rollout status deploy/voice --timeout=5m
+# `apply` may have started optional services again: keep only the active profiles running
+bash infra/scripts/profiles.sh apply
+kubectl get pods,pvc,ingress -A --field-selector metadata.namespace!=kube-system

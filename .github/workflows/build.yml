@@ -1,0 +1,144 @@
+# Build the platform's images, push them to GHCR, and pin the new digests in the manifests
+# (README §7). ArgoCD then deploys the commit. Public images: free, no size limit, no pull secret.
+#   ghcr.io/<owner>/local-ai-<name>:sha-<commit>   (+ :development on development)
+# Runs on development and on hotfix/* branches (CONTRIBUTING.md "Branching model"), so a hotfix
+# reaches main with its images already built and pinned; release.yml only tags them.
+# Builds are reproducible (SOURCE_DATE_EPOCH=0, no attestations), so an image whose inputs didn't
+# change keeps its digest and its pods aren't restarted.
+name: build
+
+on:
+  push:
+    branches: [development, "hotfix/**"]
+    paths:
+      - agent/**
+      - ui/**
+      - mcp-servers/**
+      - pipelines/**
+      - serving/**
+      - voice/**
+      - mlops/mlflow/**
+      - images/**
+      - .github/workflows/build.yml
+      - .github/bump-images.py
+  workflow_dispatch:
+
+permissions:
+  contents: write # the bump commit
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false # never drop a half-done bump
+
+env:
+  PREFIX: ghcr.io/${{ github.repository_owner }}/local-ai-
+
+jobs:
+  base:
+    name: ml-base
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        env:
+          SOURCE_DATE_EPOCH: 0
+        with:
+          context: images/ml-base
+          tags: ${{ env.PREFIX }}ml-base:sha-${{ github.sha }}${{ github.ref_name == 'development' && format(',{0}ml-base:development', env.PREFIX) || '' }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          outputs: type=image,push=true,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=ml-base
+          cache-to: type=gha,mode=max,scope=ml-base
+
+  images:
+    name: ${{ matrix.name }}
+    needs: base
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: agent, context: agent }
+          - { name: agent-ui, context: ui }
+          - { name: mcp-filesystem, context: mcp-servers/filesystem }
+          - { name: mcp-rag, context: mcp-servers/rag }
+          - { name: mcp-triage, context: mcp-servers/triage }
+          - { name: mcp-memory, context: mcp-servers/memory }
+          - { name: mcp-calendar, context: mcp-servers/calendar }
+          - { name: mcp-web, context: mcp-servers/web }
+          - { name: mlflow, context: mlops/mlflow }
+          - { name: pipelines, context: pipelines }
+          - { name: serving, context: serving }
+          - { name: voice, context: voice }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v7
+        env:
+          SOURCE_DATE_EPOCH: 0
+        with:
+          context: ${{ matrix.context }}
+          # mlflow, pipelines and serving start FROM the shared ml-base; the others ignore BASE
+          build-args: BASE=${{ env.PREFIX }}ml-base@${{ needs.base.outputs.digest }}
+          tags: ${{ env.PREFIX }}${{ matrix.name }}:sha-${{ github.sha }}${{ github.ref_name == 'development' && format(',{0}{1}:development', env.PREFIX, matrix.name) || '' }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          outputs: type=image,push=true,rewrite-timestamp=true
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          echo '{"name": "${{ matrix.name }}", "digest": "${{ steps.build.outputs.digest }}"}' > digests/${{ matrix.name }}.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: digest-${{ matrix.name }}
+          path: digests/${{ matrix.name }}.json
+
+  bump:
+    name: pin digests in the manifests
+    needs: images
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # a write deploy key, the one actor the development ruleset lets push directly; unlike
+          # the workflow token, its pushes start workflows, so a hotfix PR re-runs its checks
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+      - name: Rewrite image references
+        run: python3 .github/bump-images.py "${PREFIX}" "sha-${GITHUB_SHA}" digests
+      - name: Commit and push
+        run: |
+          if git diff --quiet; then echo "No image changed: nothing to deploy"; exit 0; fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Deploy images built from ${GITHUB_SHA::7}"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"

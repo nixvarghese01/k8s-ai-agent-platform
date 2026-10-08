@@ -1,0 +1,31 @@
+# Dagster instance (DAGSTER_HOME=/opt/dagster/home): run/event/schedule storage in Postgres,
+# step logs (stdout/stderr) in SeaweedFS so the webserver can show logs of runs the daemon ran.
+storage:
+  postgres:
+    # A full URL so the driver can be pinned: dagster-postgres needs psycopg2 (its NOTIFY query
+    # fails under psycopg 3, which SQLAlchemy picks for a bare postgresql:// URL). The pods
+    # build DAGSTER_PG_URL from the password in Secret mlops-db.
+    postgres_url:
+      env: DAGSTER_PG_URL
+
+# Runs queue up and the daemon launches them one at a time, in its own pod: one CPU-heavy
+# training run at a time keeps the laptop cool (README §12)
+run_coordinator:
+  module: dagster.core.run_coordinator
+  class: QueuedRunCoordinator
+  config:
+    max_concurrent_runs: 1
+
+compute_logs:
+  module: dagster_aws.s3.compute_log_manager
+  class: S3ComputeLogManager
+  config:
+    bucket: dagster
+    prefix: compute-logs
+    endpoint_url:
+      env: S3_ENDPOINT_URL
+    use_ssl: false
+    local_dir: /tmp/dagster-compute-logs
+
+telemetry:
+  enabled: false

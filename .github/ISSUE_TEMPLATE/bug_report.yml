@@ -1,0 +1,29 @@
+name: Bug report
+description: Something doesn't work as the README describes
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. .\local-up -Profile mlops
+        2. Open https://agent.ai.local and ask ...
+  - type: textarea
+    id: checks
+    attributes:
+      label: Output of the checks
+      description: "`.\\infra\\scripts\\platform.ps1 status` and, if you can, `make e2e`"
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Commit or release
+      placeholder: e.g. v1.0.0 or 594231d

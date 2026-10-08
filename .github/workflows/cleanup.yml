@@ -1,0 +1,30 @@
+# Keep GHCR tidy (README §7): every week, delete all but the newest versions of each image.
+# Public packages don't count against GHCR's free storage, but old versions pile up fast.
+# Released images (tags v*, latest) and the development tag are never deleted, so every
+# release can still be deployed or rolled back to.
+name: cleanup
+
+on:
+  schedule:
+    - cron: "17 3 * * 0" # Sundays 03:17 UTC
+  workflow_dispatch:
+
+permissions:
+  packages: write
+
+jobs:
+  prune:
+    name: prune old image versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          packages: >-
+            local-ai-ml-base,local-ai-agent,local-ai-agent-ui,local-ai-mcp-filesystem,
+            local-ai-mcp-rag,local-ai-mcp-triage,local-ai-mcp-memory,local-ai-mcp-calendar,
+            local-ai-mcp-web,local-ai-mlflow,local-ai-pipelines,local-ai-serving,local-ai-voice
+          exclude-tags: "v*,latest,development"
+          keep-n-tagged: 10 # enough to roll back a few deploys
+          delete-untagged: true
+          token: ${{ secrets.GITHUB_TOKEN }}
