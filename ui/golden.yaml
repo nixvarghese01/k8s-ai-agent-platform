@@ -1,0 +1,122 @@
+# Golden evaluation set (README §6.9, issue #29): fixed questions with checkable answers, run
+# against the current model of each use case (Models page -> Evaluate, or `make eval`).
+# Scored without an LLM judge, so a score is repeatable and comparable between models:
+#   all: every one must be in the answer       any: at least one       (case-insensitive)
+#   tool: a step of the agent must use it      json: the answer parses as JSON with these keys
+#   max_words: the answer is at most N words   max_seconds: slower counts as "slow", not failed
+#   {weekday}: today's weekday (Asia/Dubai)    skip_if: answer text that means a profile is off
+# The documents are the shared folder's (E:\ai-files): notes, a scanned receipt and a photo.
+# Change questions deliberately: scores are only comparable on the same set (`version`).
+version: 2  # 2: the multi-step question checks list_dir + the to-do (it's split into parts now)
+items:
+  # ---- agent: documents (RAG), OCR, files, spam, calendar, memory, web, planning ----------
+  - id: doc-decision
+    use_case: agent
+    ask: What was decided in the meeting on 2026-10-01?
+    expect: {all: ["0 EUR"], any: ["open source", "open-source"], max_seconds: 60}
+  - id: doc-next-meeting
+    use_case: agent
+    ask: When is the next meeting after the one on 2026-10-01?
+    expect: {any: ["2026-10-15", "15 October", "October 15", "15th of October"], max_seconds: 60}
+  - id: doc-reviewers
+    use_case: agent
+    ask: What did the reviewers ask for in the October 1 meeting?
+    expect: {any: ["demo video", "video"], max_seconds: 60}
+  - id: ocr-rent-amount
+    use_case: agent
+    ask: How much rent did I pay for October?
+    expect: {any: ["5,000", "5000"], max_seconds: 60}
+  - id: ocr-rent-date
+    use_case: agent
+    ask: On which date did I pay the October rent?
+    expect: {any: ["3 October", "October 3", "2026-10-03", "3rd of October", "03/10", "3 Oct"], max_seconds: 60}
+  - id: ocr-gym
+    use_case: agent
+    ask: When does my gym membership renew?
+    expect: {any: ["1 November", "November 1", "2026-11-01", "1st of November", "1st November"], max_seconds: 60}
+  - id: doc-todo
+    use_case: agent
+    ask: What's on my platform to-do list?
+    expect: {any: ["cooling stand"], max_seconds: 60}
+  - id: files-list
+    use_case: agent
+    ask: Which files are in my shared folder?
+    expect: {tool: list_dir, any: ["meeting"], max_seconds: 90}
+  - id: spam-yes
+    use_case: agent
+    ask: "Is this message spam? 'WINNER! You have won a 1000 GBP prize. Call 09061701461 now to claim.'"
+    expect: {tool: classify_message, any: ["spam"], skip_if: ["mlops profile"], max_seconds: 60}
+  - id: spam-no
+    use_case: agent
+    ask: "Is this message spam? 'Are we still on for lunch tomorrow at 1?'"
+    expect: {tool: classify_message, any: ["not spam", "ham", "isn't spam", "is not spam"], skip_if: ["mlops profile"], max_seconds: 60}
+  - id: calendar-today
+    use_case: agent
+    ask: What day of the week is it today?
+    expect: {all: ["{weekday}"], max_seconds: 60}
+  - id: calendar-week
+    use_case: agent
+    ask: What's on my calendar this week?
+    expect: {tool: list_events, max_seconds: 90}
+  - id: memory-recall
+    use_case: agent
+    setup: ["Remember that the evaluation code word is lighthouse"]
+    ask: What is the evaluation code word?
+    teardown: ["Forget that the evaluation code word is lighthouse"]
+    expect: {any: ["lighthouse"], tool: recall, max_seconds: 30}
+  - id: web-research
+    use_case: agent
+    ask: Search the web for what Kubernetes is
+    expect: {any: ["container"], all: ["http"], skip_if: ["research profile"], max_seconds: 120}
+  - id: plan-multi-step
+    use_case: agent
+    ask: List the files in my shared folder and then tell me what my to-do list says
+    expect: {tool: list_dir, any: ["cooling stand"], max_seconds: 120}
+  - id: agent-maths
+    use_case: agent
+    ask: What is 17 times 23?
+    expect: {any: ["391"], max_seconds: 60}
+
+  # ---- chat (Open WebUI's model, chat-default) ---------------------------------------------
+  - id: chat-capital
+    use_case: chat
+    ask: What is the capital of France? Answer in one sentence.
+    expect: {any: ["Paris"], max_seconds: 30}
+  - id: chat-percent
+    use_case: chat
+    ask: What is 15% of 240? Reply with the number only.
+    expect: {any: ["36"], max_words: 3, max_seconds: 30}
+  - id: chat-one-word
+    use_case: chat
+    ask: Answer with exactly one word. What colour is the sky on a clear day?
+    expect: {any: ["blue"], max_words: 1, max_seconds: 30}
+  - id: chat-json
+    use_case: chat
+    ask: 'Reply only with JSON with the keys "city" and "country" for where the Eiffel Tower is.'
+    expect: {json: ["city", "country"], any: ["Paris"], max_seconds: 30}
+  - id: chat-translate
+    use_case: chat
+    ask: Translate "good morning" into French. Reply with the translation only.
+    expect: {any: ["bonjour"], max_words: 3, max_seconds: 30}
+  - id: chat-summary
+    use_case: chat
+    ask: "Summarise in one sentence: The design review moves from Wednesday to Thursday at 3pm because two reviewers are travelling. Please update the slides with the new budget figures before then."
+    expect: {any: ["Thursday"], max_words: 40, max_seconds: 45}
+
+  # ---- e-mail triage (n8n's model, chat-email, with n8n's prompt) --------------------------
+  - id: email-work
+    use_case: email
+    ask: "From: maria@company.com\nSubject: Review moved\n\nThe design review moves to Thursday 3pm. Can you update the slides?"
+    expect: {json: ["category", "summary", "needs_reply"], any: ['"work"'], max_seconds: 45}
+  - id: email-billing
+    use_case: email
+    ask: "From: billing@cloudhost.example\nSubject: Invoice INV-2291\n\nYour invoice for October is 120 USD, due on 15 October. Pay in the customer portal."
+    expect: {json: ["category"], any: ['"billing"'], max_seconds: 45}
+  - id: email-newsletter
+    use_case: email
+    ask: "From: news@aiweekly.example\nSubject: This week in AI\n\nFive new open models, a tutorial on RAG and our upcoming webinar. Unsubscribe any time."
+    expect: {json: ["category"], any: ['"newsletter"'], max_seconds: 45}
+  - id: email-personal
+    use_case: email
+    ask: "From: mum@family.example\nSubject: Saturday\n\nHappy birthday love! Dinner at ours on Saturday? Let me know."
+    expect: {json: ["category", "needs_reply"], any: ['"personal"'], max_seconds: 45}

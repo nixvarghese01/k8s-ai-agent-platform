@@ -200,7 +200,7 @@ local-ai-platform/
 │   ├── Dockerfile
 │   ├── requirements.txt
 │   ├── main.py             # FastAPI: POST /chat, GET /tools
-│   ├── graph.py            # route -> memory / research / retrieve -> answer, plan, tools loop (6.12, 6.19)
+│   ├── graph.py            # route -> memory / research / retrieve -> answer, else tools loop (6.12, 6.19)
 │   └── prompts/system.md
 ├── mcp-servers/
 │   ├── filesystem/         # read-only list/search/read over one folder (6.10)
@@ -464,6 +464,15 @@ From a terminal, the same:
 | `.\infra\scripts\platform.ps1 model remove llama3.2:3b` | `bash infra/scripts/model.sh remove llama3.2:3b` | delete a model no use case uses |
 
 A model without tool calling can't be picked for the Agent. The agent's prompts were tuned on `qwen2.5:3b`: after a change, `make e2e` shows what still works. The Models page may change only that ConfigMap and restart LiteLLM (Role `llm/model-switch`).
+
+**Is the new model good enough? The golden set.** [`ui/golden.yaml`](ui/golden.yaml) is a fixed set of 26 questions with checkable answers: 16 for the agent (documents, OCR, files, spam, calendar, memory, web, a two-part request), 6 for plain chat (facts, maths, one-word and JSON answers) and 4 e-mails for triage (JSON with the right category). They're checked by rule (expected words, the right tool, valid JSON, word limits), not by another model, so a score is repeatable. Run it on the Models page (**Quality → Evaluate**, or tick *Evaluate after applying*) or with `make eval` (~5 min). The page then shows each model's score in the dropdowns, a history table, and a warning when a use case scores more than 10 points below its best on the same question set. Every run is also an MLflow run (experiment `llm-evaluation`) with each answer, when the `mlops` profile is on. `python evaluation.py <id>` re-runs single questions with their answers, without saving.
+
+| Golden set, `qwen2.5:3b` everywhere | Chat | Agent | E-mail | Median per question |
+|---|---|---|---|---|
+| v1 (2026-10-08), model-made plan for multi-step requests | 6/6 | 15/16 | 4/4 | 4.3 s |
+| v2 (2026-10-08), multi-step requests split into parts (6.19) | 6/6 | 16/16 | 4/4 | 4.1 s |
+
+**Introducing a new model:** download it on the Models page (it shows expected RAM, speed and fit first), apply it to one use case, evaluate, compare with the best score, and keep it or switch back. Change `golden.yaml` deliberately and bump its `version`: scores compare only within one version.
 
 Every new service should use the OpenAI client with `base_url=http://litellm.llm.svc.cluster.local:4000/v1`, any API key and an alias, never an Ollama URL or model name. Then changing a model is one line in one file.
 
@@ -732,7 +741,7 @@ Workflows 1, 5, 6 and 7 (#27): three more MCP servers in the core, one search en
 | Calendar MCP: `now`, `list_events`, `add_event`; `.ics` files + feeds | [`mcp-servers/calendar/`](mcp-servers/calendar/calendar_server.py) | `mcp-calendar` |
 | Web MCP: `web_search`, `fetch_page`, `research` | [`mcp-servers/web/`](mcp-servers/web/web_server.py) | `mcp-web` |
 | SearXNG, self-hosted metasearch (profile `research`) | upstream image, pinned | `searxng` |
-| Agent: memory and research steps, planning, today's date in every prompt, conversations in SQLite | [`agent/graph.py`](agent/graph.py), [`agent/main.py`](agent/main.py) | [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
+| Agent: memory and research steps, multi-step requests split into parts, today's date in every prompt, conversations in SQLite | [`agent/graph.py`](agent/graph.py), [`agent/main.py`](agent/main.py) | [`agent/agent.yaml`](infra/k3s/agent/agent.yaml) |
 
 **Memory (workflow 1).** "Remember that my manager is Maria Lopez" is stored straight away (0.2 s, no model call); "forget that ..." deletes it. On every question the agent looks up the saved facts that share words with it and gives them to the model, so "Who is my manager?" in a new conversation answers in ~3 s. Conversations themselves are kept in SQLite on the `agent-data` volume (`CHECKPOINT_DB`), so a thread survives an agent restart. Matching is by words, not embeddings: enough for a few hundred personal facts, and instant.
 
@@ -740,7 +749,7 @@ Workflows 1, 5, 6 and 7 (#27): three more MCP servers in the core, one search en
 
 **Web research (workflow 6).** Turn on `research` (`.\infra\scripts\platform.ps1 profile <current>,research`; SearXNG ~130 MB). "Search the web for ...", "look this up online", "latest news on ..." run one `research` call (search, read the top 3 pages, excerpts with numbers) and one summary call; the answer cites `[1]` and lists the links. `fetch_page` only reads public addresses (private, loopback and link-local targets are refused at every redirect), so the agent can't be talked into reading cluster services. Queries leave the laptop (to the search engines, through SearXNG): this is the one feature that isn't offline.
 
-**Planning (workflow 7).** A request with several steps ("list my files **and then** tell me what my to-do list says") first gets a numbered plan (one call, no tools), which goes into the agent's prompt. If the model answers before calling a tool its plan names, it's told which step is missing and continues (at most twice); without that it often stopped after step 1.
+**Multi-step requests (workflow 7).** "List my files **and then** tell me what my to-do list says" is split at *and then* / *then* / *after that* into its parts, and each part runs as its own question, in order, in the same conversation; the answer has a section per part (the 🔧 `plan` step shows the split). A model-made plan was tried first and dropped: the 3B model listed tools almost at random ("list_dir, search_documents, add_event, list_events"), and when pushed to finish that plan it once **added a calendar event nobody asked for**. The golden set (6.9) caught it; with the split, 3 of 3 runs pass in 34–39 s instead of 57–117 s, and no step is invented.
 
 **Daily briefing (workflow 10)** now has three parts: today's calendar (`mcp-calendar` `/events`), the to-dos (agent) and five headlines (`mcp-web` `/headlines`; change the topic in the *Headlines* node). With `research` off the headlines say so and the rest is written as before.
 
@@ -751,7 +760,7 @@ Workflows 1, 5, 6 and 7 (#27): three more MCP servers in the core, one search en
 | "Add a dentist appointment on Monday at 10am" | 10 s |
 | "What's on my calendar next week?" | 12–16 s |
 | "Search the web for the latest Kubernetes release" (3 pages read) | 17–19 s |
-| "List my files and then tell me what my to-do list says" (plan + 2 tools) | 57–98 s |
+| "List my files and then tell me what my to-do list says" (split into 2 questions) | 34–39 s |
 | Daily briefing (calendar + to-dos + headlines) | 29 s |
 
 **RAM:** mcp-memory 54 MB, mcp-calendar 57 MB, mcp-web 98 MB (core); SearXNG 129 MB (`research`).
@@ -831,7 +840,7 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 | 4 | Email triage | 30–60 s | ✅ spam 1.2 s, normal mail 15 s; webhook in, IMAP needs your mailbox ([6.17](#617-automation-n8n)) | n8n, BentoML classifier, LLM |
 | 5 | Calendar | 2–4 s | ✅ 10–16 s: list and add events from `.ics` files and read-only feeds; no OAuth write-back to Google/Outlook ([6.19](#619-memory-calendar-web-research-and-planning-agent)) | calendar MCP |
 | 6 | Web research | 15–30 s | ✅ 17–19 s: search, read 3 pages, cited answer with links (`research` profile) | SearXNG, web MCP |
-| 7 | Multi-step agent | 15–30 s | ✅ plan then tools, every step done; slow on CPU: 57–98 s | LangGraph |
+| 7 | Multi-step agent | 15–30 s | ✅ 34–39 s: split into its parts, each answered in turn; nothing invented ([6.19](#619-memory-calendar-web-research-and-planning-agent)) | LangGraph |
 | 8 | Voice assistant | 3–6 s | ✅ ~11 s spoken question → spoken answer: speech-to-text 3.4 s, agent ~7 s, text-to-speech 0.6 s ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) | faster-whisper, Piper, Open WebUI |
 | 9 | OCR pipeline | 4–8 s | ✅ scanned PDF / image → indexed in ~5 s each; answers cite `file.pdf p.N` ([6.18](#618-voice-and-ocr-whisper-piper-tesseract)) | Tesseract, RAG index |
 | 10 | Daily briefing | 30–60 s | ✅ 29 s: calendar, to-dos and headlines into `briefings/<date>.md` | n8n, agent, calendar + web MCP |
@@ -1033,7 +1042,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Workflows not built | **Resolved:** memory (1), calendar (5), web research (6) and planning (7) are built ([6.19](#619-memory-calendar-web-research-and-planning-agent)); all ten workflows run. |
 | Email/Calendar access | The calendar reads `.ics` files and read-only feed URLs (a Secret), so no OAuth is needed; adding events writes the local `agent.ics`, not Google/Outlook. Two-way sync or an IMAP mailbox for workflow 4 would need the provider's OAuth credentials as Secrets. |
 | Web research privacy | The only feature that sends data off the laptop: search queries go to the search engines through SearXNG, and pages are fetched from their sites. It's in its own profile (`research`), off unless you turn it on. |
-| Multi-step latency | A planned request (workflow 7) takes 57–98 s on CPU against a 15–30 s target: one call to plan, then a model round trip per tool, plus a nudge when the model stops early. A larger model or a GPU would cut the round trips. |
+| Multi-step latency | A request with two parts (workflow 7) takes 34–39 s on CPU against a 15–30 s target: each part is a full question with its own model calls. Parts are split by words ("and then"), so a request phrased without them runs as one question. |
 | 3B model quality | `qwen2.5:3b` (the default active model) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
 | Image sizes | Our images total 3.6 GB on disk after the shared `ml-base` (5.1 GB before); `pipelines` (Dagster + Evidently) is still 1.8 GB. The k3s image store was 26 GB before `k3s crictl rmi --prune` (19 GB after, mostly third-party: Open WebUI, LiteLLM). |

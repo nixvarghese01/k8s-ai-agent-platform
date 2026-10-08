@@ -7,9 +7,9 @@ change. The model is a LiteLLM alias (LLM_MODEL), never an Ollama model name.
       |---"look it up online"-----> research --> summarise ---------------------> END
       v
     prepare (memories; passages) --(passages or facts?)--> answer --(answered)--> END
-      |        |                                    | (NO_ANSWER)
-      |   (multi-step?) --> plan --+                v
-      +---------------------------+--> agent --(tool calls?)--> tools -> agent ... --(no)--> END
+      |                                                     | (NO_ANSWER)
+      +-----------------------------------------------------+--> agent --(tool calls?)--> tools
+                                                                   ^-----------------------+
 
 Shaped around what a 3B model on CPU does reliably (qwen2.5:3b, measured 2026-10-03/08):
 - Fixed steps run without the model where a rule is enough. `prepare` runs the RAG search
@@ -17,12 +17,14 @@ Shaped around what a 3B model on CPU does reliably (qwen2.5:3b, measured 2026-10
   is stored directly; a web question runs the one `research` tool. With tools bound, the model
   often skipped a step, or repeated one after being handed its result.
 - `answer` and `summarise` get the material and no tools: one short call instead of two or
-  three round trips. When the passages don't answer the question, `answer` says NO_ANSWER and
-  the question goes to `agent` without them.
+  three round trips. When the material doesn't answer the question, `answer` says NO_ANSWER and
+  the question goes to `agent` without it.
 - `agent` has the remaining tools (files, spam check, calendar, web). The search tool isn't
-  offered to it except in a planned task; on its own it only made redundant calls.
-- Multi-step requests ("... and then ...") get a short numbered plan first (`plan`), which the
-  agent then works through; without it the model stopped after the first tool.
+  offered to it; it only made redundant calls.
+- Multi-step requests ("A and then B") are split into their parts (split_request), and main.py
+  runs each part through this graph in turn. Asked to plan, the 3B model listed tools almost at
+  random ("list_dir, search_documents, add_event, list_events") and, pushed to finish that plan,
+  once added a calendar event nobody asked for (golden set, 2026-10-08).
 - Questions that need a tool skip retrieval (TOOL_INTENT): "which files..." (passages that
   mention files made the model describe the README instead of listing the folder), "is this
   spam...", and calendar questions.
@@ -81,8 +83,9 @@ RESEARCH_INTENT = re.compile(
     r"|\b(on|from) the (web|internet)\b|^\s*(please\s+)?research\b|\blatest news\b|\bnews (about|on)\b",
     re.IGNORECASE,
 )
-# Requests with several steps
-PLAN_INTENT = re.compile(r"\b(and then|then|after that|afterwards|and also|as well as)\b|\bfirst\b.{3,}\b(and|next)\b", re.IGNORECASE)
+# Where a request with several steps divides: "list my files and then read the to-do list"
+STEP_BREAK = re.compile(r"\s*[,;.]?\s*\b(?:and then|then|after that|afterwards|and also)\b[,:]?\s*", re.IGNORECASE)
+MAX_STEPS_PER_REQUEST = 4
 
 ANSWER_PROMPT = """Answer the user's question from this material:
 
@@ -101,14 +104,19 @@ Rules:
 - Cite the pages you used as [1], [2] after the sentence.
 - If the pages don't answer it, say what they do say and that it's not conclusive."""
 
-PLAN_PROMPT = """Break the user's request into the steps needed to do it, using these tools:
-
-{tools}
-
-Reply with a numbered list of at most 4 short steps, one per line, naming the tool for each
-step. No explanation."""
-
 SYSTEM_PROMPT = (Path(__file__).parent / "prompts" / "system.md").read_text(encoding="utf-8")
+
+
+def split_request(message: str) -> list[str]:
+    """The parts of a multi-step request, in order; one part if it isn't one. A part needs two
+    words or more ("what then?" stays whole), and a leading "first" is dropped."""
+    parts = [re.sub(r"^(first|firstly)[,:]?\s+", "", p.strip(" ,;."), flags=re.IGNORECASE)
+             for p in STEP_BREAK.split(message)]
+    parts = [p for p in parts if len(p.split()) >= 2]
+    if len(parts) < 2:
+        return [message]
+    return parts[: MAX_STEPS_PER_REQUEST - 1] + [" and then ".join(parts[MAX_STEPS_PER_REQUEST - 1:])] \
+        if len(parts) > MAX_STEPS_PER_REQUEST else parts
 
 
 async def load_tools() -> tuple[list, list[str]]:
@@ -130,7 +138,6 @@ async def load_tools() -> tuple[list, list[str]]:
 class State(MessagesState):
     context: str  # passages the current answer is based on ("" if none)
     memories: str  # saved facts that relate to the question ("" if none)
-    plan: str  # numbered steps for a multi-step request ("" if none)
     web: str  # web excerpts the answer is based on ("" if none)
     answered: bool  # `answer` replied from the material (else the question goes to `agent`)
 
@@ -163,19 +170,14 @@ def build_graph(tools, model=None, checkpointer=None):
     recall = by_name.get(MEMORY_TOOL) if MEMORY_TOOL else None
     remember, forget, research = by_name.get("remember"), by_name.get("forget"), by_name.get("research")
     # The agent gets everything but the steps that run on their own
-    memory = {n for n in (MEMORY_TOOL, "remember", "forget") if n}
-    agent_tools = [t for t in tools if t.name not in memory and t.name != RETRIEVE_TOOL]
-    plan_tools = [t for t in tools if t.name not in memory]  # a plan may search the documents
+    automatic = {n for n in (RETRIEVE_TOOL, MEMORY_TOOL, "remember", "forget") if n}
+    agent_tools = [t for t in tools if t.name not in automatic]
     with_tools = model.bind_tools(agent_tools)
-    with_plan_tools = model.bind_tools(plan_tools)
 
     def system(state: State) -> SystemMessage:
         extra = [today()]
         if state.get("memories"):
             extra.append("What you know about the user from earlier conversations:\n" + state["memories"])
-        if state.get("plan"):
-            extra.append("Plan for this request; do every step in order with the tools, then answer "
-                         "covering all of them:\n" + state["plan"])
         return SystemMessage(SYSTEM_PROMPT + "\n\n" + "\n\n".join(extra))
 
     def question(state: State) -> str:
@@ -208,10 +210,10 @@ def build_graph(tools, model=None, checkpointer=None):
         m = REMEMBER.match(q) if remember else None
         result = await call(remember, {"fact": m["fact"]}) if m else await call(forget, {"what": FORGET.match(q)["fact"]})
         reply = result.replace("Remembered:", "Got it, I'll remember:").replace("Forgot:", "Done, I've forgotten:")
-        return {"messages": [AIMessage(reply)], "context": "", "memories": "", "plan": "", "web": ""}
+        return {"messages": [AIMessage(reply)], "context": "", "memories": "", "web": ""}
 
     async def research_node(state: State):
-        return {"web": await call(research, {"question": question(state)}), "context": "", "memories": "", "plan": ""}
+        return {"web": await call(research, {"question": question(state)}), "context": "", "memories": ""}
 
     async def summarise(state: State):
         if not state["web"].startswith("[1] "):  # off, failed or nothing found: say so as it is
@@ -221,23 +223,20 @@ def build_graph(tools, model=None, checkpointer=None):
 
     async def prepare(state: State):
         q = question(state)
-        update = {"context": "", "memories": "", "plan": "", "web": "", "answered": False}
+        update = {"context": "", "memories": "", "web": "", "answered": False}
         if recall:
             found = await call(recall, {"query": q})
             update["memories"] = found if found.startswith("#") else ""
-        if search and not TOOL_INTENT.search(q) and not PLAN_INTENT.search(q):
+        if search and not TOOL_INTENT.search(q):
             found = await call(search, {"query": q})
             update["context"] = found if found.startswith(PASSAGES_PREFIX) else ""
         return update
 
     def after_prepare(state: State) -> str:
-        q = question(state)
         if state.get("context"):
             return "answer"
-        if PLAN_INTENT.search(q):
-            return "plan"
         # A saved fact may answer it outright ("who is my manager?"): one call, no tools
-        return "answer" if state.get("memories") and not TOOL_INTENT.search(q) else "agent"
+        return "answer" if state.get("memories") and not TOOL_INTENT.search(question(state)) else "agent"
 
     async def answer(state: State):
         material = []
@@ -251,30 +250,8 @@ def build_graph(tools, model=None, checkpointer=None):
             return {"context": "", "answered": False}  # -> agent, without the passages
         return {"messages": [reply], "answered": True}
 
-    async def plan(state: State):
-        listing = "\n".join(f"- {t.name}: {(t.description or '').splitlines()[0]}" for t in plan_tools)
-        reply = await model.ainvoke([SystemMessage(PLAN_PROMPT.format(tools=listing)), HumanMessage(question(state))])
-        steps = [s.strip() for s in text(reply.content).splitlines() if re.match(r"\s*\d+[.)]", s)][:4]
-        return {"plan": "\n".join(steps)}
-
-    def unfinished(state: State) -> list[str]:
-        """Plan steps whose tool hasn't been called yet in this turn."""
-        msgs = state["messages"]
-        last_human = max(i for i, m in enumerate(msgs) if isinstance(m, HumanMessage))
-        called = {c["name"] for m in msgs[last_human:] if isinstance(m, AIMessage) for c in m.tool_calls}
-        return [s for s in state["plan"].splitlines()
-                if (names := [t.name for t in plan_tools if re.search(rf"\b{re.escape(t.name)}\b", s)])
-                and not set(names) & called]
-
     async def agent(state: State):
-        bound = with_plan_tools if state.get("plan") else with_tools
-        reply = await bound.ainvoke([system(state), *history(state)])
-        for _ in range(2):  # the model tends to answer after the first step of a plan
-            todo = unfinished(state) if state.get("plan") and not reply.tool_calls else []
-            if not todo:
-                break
-            hint = SystemMessage(f"Not done yet: {todo[0]}. Call the tool for that step now.")
-            reply = await bound.ainvoke([system(state), *history(state), hint])
+        reply = await with_tools.ainvoke([system(state), *history(state)])
         if not reply.tool_calls and not text(reply.content).strip():
             # With tools bound, qwen2.5:3b answers some plain questions ("17 times 23") with
             # nothing at all; the same call without tools answers them
@@ -287,16 +264,14 @@ def build_graph(tools, model=None, checkpointer=None):
     g.add_node("summarise", summarise)
     g.add_node("prepare", prepare)
     g.add_node("answer", answer)
-    g.add_node("plan", plan)
     g.add_node("agent", agent)
-    g.add_node("tools", ToolNode(plan_tools, handle_tool_errors=True))
+    g.add_node("tools", ToolNode(agent_tools, handle_tool_errors=True))
     g.add_conditional_edges(START, route, ["memorize", "research", "prepare"])
     g.add_edge("memorize", END)
     g.add_edge("research", "summarise")
     g.add_edge("summarise", END)
-    g.add_conditional_edges("prepare", after_prepare, ["answer", "plan", "agent"])
+    g.add_conditional_edges("prepare", after_prepare, ["answer", "agent"])
     g.add_conditional_edges("answer", lambda s: END if s.get("answered") else "agent", [END, "agent"])
-    g.add_edge("plan", "agent")
     g.add_conditional_edges("agent", tools_condition)  # tool calls -> "tools", else END
     g.add_edge("tools", "agent")
     return g.compile(checkpointer=checkpointer or InMemorySaver())

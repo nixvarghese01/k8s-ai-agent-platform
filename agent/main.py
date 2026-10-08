@@ -22,7 +22,7 @@ from fastapi import FastAPI, HTTPException
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel
 
-from graph import LLM_MODEL, MCP_SERVERS, MEMORY_TOOL, RETRIEVE_TOOL, build_graph, load_tools, text
+from graph import LLM_MODEL, MCP_SERVERS, MEMORY_TOOL, RETRIEVE_TOOL, build_graph, load_tools, split_request, text
 
 log = logging.getLogger("agent")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -164,32 +164,44 @@ async def chat(req: ChatRequest):
     thread_id = req.thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 2 * MAX_STEPS + 1}
     start = time.time()
-    try:
-        result = await graph.ainvoke({"messages": [HumanMessage(req.message)]}, config)
-    except Exception as e:
-        log.exception("agent run failed")
-        raise HTTPException(500, f"agent run failed: {e}")
+    # "A and then B": each part is asked on its own, in order, in the same conversation
+    parts = split_request(req.message)
+    steps = [Step(tool="plan", args={}, result="\n".join(f"{i}. {p}" for i, p in enumerate(parts, 1)))] if len(parts) > 1 else []
+    answers = []
+    for part in parts:
+        try:
+            answer, part_steps = await turn(graph, part, config)
+        except Exception as e:
+            log.exception("agent run failed")
+            raise HTTPException(500, f"agent run failed: {e}")
+        steps += part_steps
+        answers.append(answer)
+    answer = answers[0] if len(parts) == 1 else "\n\n".join(f"**{p}**\n\n{a}" for p, a in zip(parts, answers))
+    seconds = round(time.time() - start, 1)
+    log.info("thread %s: %d parts, %d steps, %.1fs", thread_id, len(parts), len(steps), seconds)
+    return ChatResponse(thread_id=thread_id, answer=answer, steps=steps, seconds=seconds)
 
+
+async def turn(graph, message: str, config: dict) -> tuple[str, list[Step]]:
+    """One question through the graph: (answer with its sources, the steps it took)."""
+    result = await graph.ainvoke({"messages": [HumanMessage(message)]}, config)
     # Messages produced by this turn: everything after the last human message
     messages = result["messages"]
     last_human = max(i for i, m in enumerate(messages) if isinstance(m, HumanMessage))
-    turn = messages[last_human + 1 :]
+    produced = messages[last_human + 1 :]
 
-    results = {m.tool_call_id: text(m.content) for m in turn if isinstance(m, ToolMessage)}
+    results = {m.tool_call_id: text(m.content) for m in produced if isinstance(m, ToolMessage)}
     # The automatic steps come first, so the UI shows what the model was given
-    auto = [(f"{MEMORY_TOOL} (auto)", {"query": req.message}, result.get("memories")),
-            (f"{RETRIEVE_TOOL} (auto)", {"query": req.message}, result.get("context")),
-            ("research (auto)", {"question": req.message}, result.get("web")),
-            ("plan", {}, result.get("plan"))]
+    auto = [(f"{MEMORY_TOOL} (auto)", {"query": message}, result.get("memories")),
+            (f"{RETRIEVE_TOOL} (auto)", {"query": message}, result.get("context")),
+            ("research (auto)", {"question": message}, result.get("web"))]
     steps = [Step(tool=name, args=args, result=res) for name, args, res in auto if res]
     steps += [
         Step(tool=c["name"], args=c["args"], result=results.get(c["id"], ""))
-        for m in turn
+        for m in produced
         if isinstance(m, AIMessage)
         for c in m.tool_calls
     ]
-    answer = text(turn[-1].content) if turn else ""
+    answer = text(produced[-1].content) if produced else ""
     answer += sources(result.get("context", ""), answer) + web_sources(result.get("web", ""), answer)
-    seconds = round(time.time() - start, 1)
-    log.info("thread %s: %d tool calls, %.1fs", thread_id, len(steps), seconds)
-    return ChatResponse(thread_id=thread_id, answer=answer, steps=steps, seconds=seconds)
+    return answer, steps

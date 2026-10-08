@@ -92,7 +92,7 @@ def research():
 check("web research (workflow 6)", research)
 def planned():
     d, tools = chat("List the files in my shared folder and then tell me what my to-do list says")
-    return ok("plan" in tools and "read_file" in tools, f"{' -> '.join(tools)}, {d['seconds']}s")
+    return ok(tools[0] == "plan" and "list_dir" in tools and "cooling stand" in d["answer"], f"{' -> '.join(tools)}, {d['seconds']}s")
 check("multi-step plan (workflow 7)", planned)
 
 print("== documents")

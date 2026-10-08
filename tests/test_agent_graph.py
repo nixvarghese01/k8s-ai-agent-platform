@@ -134,7 +134,7 @@ def test_spam_questions_go_to_the_tools_not_the_documents():
     assert calls == []
 
 
-# ---- workflows 1, 5, 6, 7: memory, calendar, web research, planning ----------------------
+# ---- workflows 1, 5, 6: memory, calendar, web research --------------------------------------
 def memory_tools(saved: list, facts: str = "#1 I live in Dubai (saved 2026-10-08)"):
     @tool
     def remember(fact: str) -> str:
@@ -207,20 +207,6 @@ def test_research_off_is_reported_as_is():
     assert model.seen == [] and "research profile" in result["messages"][-1].content
 
 
-def test_multi_step_requests_get_a_plan_first():
-    answers = [
-        AIMessage("1. list_dir to find the notes\n2. read_file the meeting note\nSure!"),
-        AIMessage("", tool_calls=[{"name": "list_dir", "args": {"path": "."}, "id": "c1"}]),
-        AIMessage("Done: README.md is the only file."),
-    ]
-    calls = []
-    model, result = run([searcher(PASSAGE, calls), list_dir], answers, "List my files and then summarise the meeting note")
-    assert calls == []  # planned tasks skip the automatic retrieval
-    assert result["plan"] == "1. list_dir to find the notes\n2. read_file the meeting note"
-    assert "Plan for this request" in model.seen[1][0].content and "2. read_file" in model.seen[1][0].content
-    assert result["messages"][-1].content == "Done: README.md is the only file."
-
-
 def test_load_tools_skips_servers_that_are_down(monkeypatch):
     import graph
 
@@ -239,20 +225,36 @@ def test_load_tools_skips_servers_that_are_down(monkeypatch):
     assert [t.name for t in tools] == ["list_dir"] and missing == ["down"]
 
 
-def test_an_unfinished_plan_is_continued():
-    @tool
-    def read_file(path: str) -> str:
-        """Read a file."""
-        return "- buy milk"
+# ---- multi-step requests: split, then each part on its own --------------------------------
+def test_split_request():
+    from graph import split_request
 
-    answers = [
-        AIMessage("1. list_dir to find the to-do list\n2. read_file the to-do list"),
-        AIMessage("", tool_calls=[{"name": "list_dir", "args": {"path": "."}, "id": "c1"}]),
-        AIMessage("Your folder has README.md."),  # stops after step 1
-        AIMessage("", tool_calls=[{"name": "read_file", "args": {"path": "todo.md"}, "id": "c2"}]),
-        AIMessage("Files: README.md. To-do: buy milk."),
-    ]
-    model, result = run([list_dir, read_file], answers, "List my files and then read my to-do list")
-    assert "Not done yet: 2. read_file" in model.seen[3][-1].content
-    assert result["messages"][-1].content == "Files: README.md. To-do: buy milk."
-    assert "Your folder has README.md." not in [m.content for m in result["messages"]]
+    assert split_request("List my files and then tell me what my to-do list says") == [
+        "List my files", "tell me what my to-do list says"]
+    assert split_request("First read the meeting note, then add a reminder, after that list my files") == [
+        "read the meeting note", "add a reminder", "list my files"]
+    assert split_request("What happened then?") == ["What happened then?"]  # nothing to split
+    assert split_request("What did we decide?") == ["What did we decide?"]
+    many = split_request("do a b and then do c d and then do e f and then do g h and then do i j")
+    assert len(many) == 4 and many[-1] == "do g h and then do i j"
+
+
+def test_each_part_is_answered_in_turn_in_one_conversation(monkeypatch):
+    import main
+
+    answers = [AIMessage("", tool_calls=[{"name": "list_dir", "args": {"path": "."}, "id": "c1"}]),
+               AIMessage("One file: README.md."), AIMessage("The to-do list says: buy milk.")]
+    model = RecordingModel(messages=iter(answers), seen=[])
+    graph = build_graph([list_dir], model=model)
+
+    async def fake_graph():
+        return graph
+
+    monkeypatch.setattr(main, "get_graph", fake_graph)
+    r = asyncio.run(main.chat(main.ChatRequest(message="List my files and then tell me what my to-do list says",
+                                               thread_id="t")))
+    assert [s.tool for s in r.steps] == ["plan", "list_dir"]
+    assert r.steps[0].result == "1. List my files\n2. tell me what my to-do list says"
+    assert r.answer == ("**List my files**\n\nOne file: README.md.\n\n"
+                        "**tell me what my to-do list says**\n\nThe to-do list says: buy milk.")
+    assert model.seen[-1][-1].content == "tell me what my to-do list says"  # the 2nd part, with the 1st in history

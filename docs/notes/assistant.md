@@ -10,8 +10,8 @@ All ten README workflows now run.
   `E:\ai-files\calendar` and optional read-only feed URLs (Secret `agent/calendar-feeds`).
 - **mcp-web** (core, 98 MB) + **SearXNG** (profile `research`, 129 MB): `web_search`,
   `fetch_page`, and `research` (search + read 3 pages in one call). Public addresses only.
-- **Agent:** routes "remember/forget" and web questions to fixed steps, plans multi-step
-  requests, gives the model today's date, keeps conversations in SQLite (survive restarts),
+- **Agent:** routes "remember/forget" and web questions to fixed steps, splits multi-step
+  requests into their parts, gives the model today's date, keeps conversations in SQLite (survive restarts),
   and loads MCP servers that were down at start once they come up.
 - **Daily briefing:** calendar + to-dos + headlines.
 
@@ -26,12 +26,13 @@ All ten README workflows now run.
   model skipped or repeated tool calls when it had to decide these itself.
 
 ## Fixed on the way
-- With a plan, the model often stopped after step 1: the agent now names the missing step and
-  asks again (at most twice). 3 of 3 runs then did every step.
+- The golden set (#29) found the model-made plan harmful: the 3B model listed tools at random and,
+  pushed to finish the plan, once added a calendar event. Multi-step requests are now split at
+  "and then" and each part is asked on its own: 3/3 correct, 34–39 s, nothing invented.
 - A saved fact went to the tool loop, which called `list_dir` and credited a random file: facts
   now go to the one-call answer step (15 s → 3 s, correct).
 
 ## Measured (qwen2.5:3b, CPU)
 - Remember 0.2 s; recall in a new conversation 3.2 s; add event 10 s; list a week 12–16 s;
-  web research 17–19 s; planned request 57–98 s; briefing 29 s.
+  web research 17–19 s; two-part request 34–39 s (was 57–117 s with a model-made plan); briefing 29 s.
 - `make e2e` covers all four; 38 unit tests for the agent and the three servers.

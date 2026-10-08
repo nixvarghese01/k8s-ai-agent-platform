@@ -27,7 +27,7 @@ last. Every step was run on the reference laptop (CPU only); the times are what 
 | 6a | same | **"Remember that my manager is Maria Lopez"**, then **New chat** and **"Who is my manager?"** | stored at once; answered in a new conversation in ~3 s |
 | 6b | same | **"Add a dentist appointment on Monday at 10am"**, then **"What's on my calendar next week?"** | `add_event`, then `list_events` shows it, ~10–16 s each |
 | 6c | same (profile `research` on) | **"Search the web for the latest Kubernetes release"** | answer citing [1] with the link, ~18 s |
-| 6d | same | **"List the files in my shared folder and then tell me what my to-do list says"** | `plan` → `list_dir` → `read_file`; slow on CPU (~1–1.5 min) |
+| 6d | same | **"List the files in my shared folder and then tell me what my to-do list says"** | `plan` (the split) → `list_dir`, then the to-do from the documents; ~35 s |
 | 7 | https://chat.ai.local | Click the microphone, say **"When is my gym membership renewal due?"**, send; click the speaker on the answer | transcribed in ~3 s; answer read aloud |
 | 8 | https://phoenix.ai.local → project `agent` | Open the trace of question 4: LangGraph → retrieve → search_documents → answer → model call | every step with timings |
 | 9 | https://grafana.ai.local | *Platform overview*: memory and CPU by namespace, requests per UI | live panels |

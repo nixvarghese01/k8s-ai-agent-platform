@@ -5,6 +5,7 @@ import time
 import pandas as pd
 import streamlit as st
 
+import evaluation
 import models
 
 st.title("Models")
@@ -18,6 +19,7 @@ try:
     have = models.installed()
     loaded = models.in_memory()
     sysinfo = models.system()
+    evals = evaluation.history(kube)
 except Exception as e:
     st.error(f"Can't reach Ollama or Kubernetes: {e}")
     st.stop()
@@ -35,11 +37,30 @@ def speed_of(name: str) -> tuple[float | None, bool]:
     return models.expected_speed(name, sizes.get(name, 0), speeds, sizes)
 
 
-def describe(name: str) -> str:
+scores = evaluation.model_scores(evals)
+
+
+def describe(name: str, uc: str | None = None) -> str:
     tps, measured = speed_of(name)
     fit = models.verdict(ram[name], free_gb)
     speed = f"{tps} tok/s{'' if measured else ' (est.)'}" if tps else "speed not measured"
-    return f"{models.ICON[fit]} {name} · ~{ram[name]} GB RAM · {speed}"
+    score = f" · eval {scores[(uc, name)]:.0%}" if (uc, name) in scores else ""
+    return f"{models.ICON[fit]} {name} · ~{ram[name]} GB RAM · {speed}{score}"
+
+
+def evaluate():
+    """Run the golden set with the current models, with a progress bar; message for the rerun."""
+    bar = st.progress(0.0, text="Evaluating…")
+
+    def progress(i, n, item):
+        bar.progress(i / n, text=f"{i + 1}/{n}: {item['use_case']} · {item['id']}")
+
+    summary, _ = evaluation.run(kube, progress)
+    bar.progress(1.0, text="Done")
+    parts = [f"{models.USE_CASES[uc][0].split(':')[0]} {s['passed']}/{s['total']}" for uc, s in summary["by_use_case"].items()]
+    msg = f"Evaluated: {summary['score']:.0%} overall ({', '.join(parts)}), median {summary['median_s']} s per question."
+    worse = evaluation.worse_than_best(summary, evals)
+    return msg, worse
 
 
 for key in ("done", "error"):  # messages from the action before the last rerun
@@ -69,7 +90,8 @@ picked = {}
 for uc, (label, _, alias, needs_tools) in models.USE_CASES.items():
     options = [n for n in sizes if not needs_tools or "tools" in caps[n]]
     current = choice[uc] if choice[uc] in options else (options[0] if options else None)
-    picked[uc] = st.selectbox(label, options, index=options.index(current) if current else None, format_func=describe,
+    picked[uc] = st.selectbox(label, options, index=options.index(current) if current else None,
+                              format_func=lambda n, uc=uc: describe(n, uc),
                               key=f"uc-{uc}", help=f"LiteLLM alias `{alias}`" + (" · tool-calling models only" if needs_tools else ""))
     if choice[uc] not in sizes:
         st.warning(f"`{choice[uc]}` is set for this but isn't downloaded.")
@@ -93,6 +115,7 @@ if all(picked.values()):
 
     changed = any(picked[uc] != choice[uc] for uc in models.USE_CASES)
     anyway = plan["verdict"] != "too big" or st.checkbox("Apply anyway")
+    then_eval = st.checkbox("Evaluate after applying (golden set, ~10 min)", value=False)
     if st.button("Apply", type="primary", disabled=not (changed and anyway)):
         try:
             with st.status("Applying…", expanded=True) as status:
@@ -113,9 +136,43 @@ if all(picked.values()):
                 reply, _ = models.smoke_test("chat-tools")
                 status.update(label="Applied", state="complete")
             st.session_state.done = "Applied. " + "; ".join(results) + f". Agent alias answers: “{reply[:30]}”."
+            if then_eval:
+                msg, worse = evaluate()
+                st.session_state.done += " " + msg
+                if worse:
+                    st.session_state.error = "Worse than before: " + "; ".join(worse) + ". Consider switching back."
         except Exception as e:
             st.session_state.error = f"Applying failed: {e}"
         st.rerun()
+
+# ---- quality: the golden set ---------------------------------------------------------------
+st.subheader("Quality")
+st.caption("The golden set (ui/golden.yaml): fixed questions for the agent, chat and e-mail triage, checked for "
+           "the expected facts, tools and JSON. Run it before keeping a model change; scores compare on the same set.")
+if evals:
+    latest = evals[-1]
+    if latest["choice"] == choice:
+        for line in evaluation.worse_than_best(latest, evals[:-1]):
+            st.warning(f"Worse than before: {line}. Consider switching back.")
+    elif any(latest["choice"].get(uc) != choice[uc] for uc in models.USE_CASES):
+        st.info("The current models haven't been evaluated yet.")
+    rows = [{"When": e["at"], **{models.USE_CASES[uc][0].split(":")[0].split(" (")[0]:
+                                 f"{e['choice'][uc]} · {e['by_use_case'][uc]['score']:.0%}" if uc in e["by_use_case"] else e["choice"][uc]
+                                 for uc in models.USE_CASES},
+             "Overall": f"{e['score']:.0%}" if e["score"] is not None else "—", "Median (s)": e["median_s"],
+             "Slow": e["slow"], "Failed": ", ".join(e["failed"])} for e in reversed(evals)]
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+else:
+    st.info("No evaluation yet: run one to get a baseline for the current models.")
+if st.button("Evaluate the current models (~10 min)"):
+    try:
+        msg, worse = evaluate()
+        st.session_state.done = msg
+        if worse:
+            st.session_state.error = "Worse than before: " + "; ".join(worse) + ". Consider switching back."
+    except Exception as e:
+        st.session_state.error = f"Evaluation failed: {e}"
+    st.rerun()
 
 # ---- downloaded models ---------------------------------------------------------------------
 st.subheader("Downloaded")
