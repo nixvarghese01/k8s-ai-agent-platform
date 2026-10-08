@@ -43,11 +43,11 @@ if ! kubectl -n mlops get secret s3-credentials >/dev/null 2>&1; then
 fi
 
 # HTTPS certificate for *.ai.local (README §6.14), from the local CA; root reads the CA key
-if ! kubectl -n kube-system get secret platform-tls >/dev/null 2>&1; then
+if ! kubectl -n kube-system get secret platform-tls >/dev/null 2>&1 || ! kubectl -n kube-system get configmap local-ai-ca >/dev/null 2>&1; then
   if [ "$EUID" -eq 0 ]; then
     bash infra/scripts/host/06-local-tls.sh
   else
-    echo "No TLS certificate yet: run  wsl -u root -- bash infra/scripts/host/06-local-tls.sh  then deploy again" >&2
+    echo "No TLS certificate or CA ConfigMap yet: run  wsl -u root -- bash infra/scripts/host/06-local-tls.sh  then deploy again" >&2
     exit 1
   fi
 fi
@@ -56,6 +56,21 @@ fi
 if ! kubectl -n auth get secret authelia-secrets >/dev/null 2>&1; then
   kubectl -n auth create secret generic authelia-secrets --from-literal=session-secret="$(rand 32)" \
     --from-literal=storage-encryption-key="$(rand 32)" --from-literal=jwt-secret="$(rand 32)"
+fi
+# OpenID Connect (ArgoCD's sign-on): Authelia's signing key and HMAC secret, and ArgoCD's client
+# secret with the digest Authelia checks it against. Added once, also to an older authelia-secrets.
+if [ -z "$(kubectl -n auth get secret authelia-secrets -o jsonpath='{.data.oidc-jwks-key}')" ]; then
+  client=$(rand 32)
+  image=$(grep -o 'ghcr.io/authelia/authelia:[^ ]*' infra/k3s/auth/authelia.yaml | head -1)
+  digest=$(kubectl -n auth run "authelia-hash-$RANDOM" --rm -i --quiet --restart=Never --image="$image" \
+    --command -- authelia crypto hash generate pbkdf2 --variant sha512 --password "$client" | sed -n 's/^Digest: //p')
+  [ -n "$digest" ] || { echo "hashing the OIDC client secret failed" >&2; exit 1; }
+  b64() { printf '%s' "$1" | base64 -w0; }
+  kubectl -n auth patch secret authelia-secrets --type merge -p "{\"data\":{
+    \"oidc-jwks-key\":\"$(openssl genrsa 2048 2>/dev/null | base64 -w0)\",
+    \"oidc-hmac-secret\":\"$(b64 "$(rand 32)")\",
+    \"oidc-argocd-secret\":\"$(b64 "$client")\",
+    \"oidc-argocd-digest\":\"$(b64 "$digest")\"}}" >/dev/null
 fi
 # n8n encrypts its stored credentials with this key; losing it means re-entering them
 if ! kubectl -n automation get secret n8n-secret >/dev/null 2>&1; then
@@ -67,6 +82,24 @@ fi
 set -x
 
 kubectl apply -R -f infra/k3s/
+
+# Headlamp's sign-on: Traefik adds its ServiceAccount token to each request that passed the
+# platform login (ingress headlamp). Made here, not in Git, because it holds the token.
+set +x
+token=$(kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d)
+for _ in $(seq 30); do [ -n "$token" ] && break; sleep 1; token=$(kubectl -n ui get secret headlamp-token -o jsonpath='{.data.token}' | base64 -d); done
+kubectl apply -f - >/dev/null <<EOF
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: headlamp-token
+  namespace: ui
+spec:
+  headers:
+    customRequestHeaders:
+      Authorization: "Bearer $token"
+EOF
+set -x
 kubectl -n llm rollout status deploy/litellm --timeout=10m
 kubectl -n storage rollout status deploy/qdrant --timeout=10m
 kubectl -n auth rollout status deploy/authelia --timeout=5m

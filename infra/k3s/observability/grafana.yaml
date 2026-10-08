@@ -127,6 +127,10 @@ spec:
               value: username
             - name: GF_AUTH_PROXY_AUTO_SIGN_UP
               value: "true"
+            # Trust the header only from Traefik (host network: the host's address on the pod
+            # network), not from a pod that calls Grafana directly
+            - name: GF_AUTH_PROXY_WHITELIST
+              value: 10.42.0.1
             - name: GF_USERS_AUTO_ASSIGN_ORG_ROLE
               value: Admin # single-user platform: the signed-in user may edit dashboards
             - name: GF_AUTH_DISABLE_LOGIN_FORM

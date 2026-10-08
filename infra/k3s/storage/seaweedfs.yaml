@@ -1,7 +1,7 @@
 # SeaweedFS: S3-compatible object storage (replaces MinIO, which went source-only in late 2025;
 # README §6.13). `weed mini` runs master, volume, filer, S3 API and admin UI in one process.
 #   S3 API (in-cluster): http://seaweedfs.storage.svc.cluster.local:8333   buckets: mlflow, dagster
-#   Admin UI: https://s3.ai.local (user admin, password: `make s3-credentials`)
+#   Admin UI: https://s3.ai.local, signed in by the platform login (no password of its own)
 # S3 keys and the admin password live in Secret storage/seaweedfs-secret, created by deploy.sh.
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -49,16 +49,12 @@ spec:
             - -ip=127.0.0.1 # all in one pod; keeps the volume address stable across restarts
             - -bucket=mlflow,dagster,triage # created on start if missing (triage: served requests)
             - -s3.config=/etc/seaweedfs/s3.json
-            - -admin.password=$(ADMIN_PASSWORD)
+            # No admin password: the platform login guards https://s3.ai.local, and the
+            # NetworkPolicy below keeps other pods off the admin port. (Dropping the flag took
+            # two restarts: the first one still read it from /data/mini.options.)
             - -webdav=false
             - -master.telemetry=false
             - -master.volumeSizeLimitMB=256 # small volume files suit a laptop disk
-          env:
-            - name: ADMIN_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: seaweedfs-secret
-                  key: admin-password
           ports:
             - name: s3
               containerPort: 8333
@@ -117,3 +113,19 @@ spec:
     - name: admin
       port: 23646
       targetPort: admin
+---
+# Pods may use the S3 API; the admin UI (no password) is reachable only through Traefik, which
+# runs on the host network, after the platform login
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: seaweedfs-admin-via-traefik
+  namespace: storage
+spec:
+  podSelector:
+    matchLabels:
+      app: seaweedfs
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 8333

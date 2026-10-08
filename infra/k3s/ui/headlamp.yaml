@@ -1,7 +1,8 @@
 # Headlamp at https://headlamp.ai.local: a web UI for the cluster (pods, logs, events, shell,
-# resource usage). It logs in with a service-account token, not a password: from Windows run
-# `.\infra\scripts\platform.ps1 headlamp-token` (copies it), or `make headlamp-token` inside
-# Ubuntu (README §6.11). The token is cluster-admin, so treat it like a root password. Fine while
+# resource usage). It logs in with a service-account token, which Traefik adds to every request
+# after the platform login (Middleware ui/headlamp-token, made by deploy.sh), so there's no
+# prompt. To paste it by hand: `.\infra\scripts\platform.ps1 headlamp-token` or
+# `make headlamp-token` (README §6.11). The token is cluster-admin, so treat it like a root password. Fine while
 # headlamp.ai.local is reachable only from this PC (WSL NAT); use a read-only role before exposing it.
 apiVersion: v1
 kind: ServiceAccount

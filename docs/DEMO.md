@@ -38,4 +38,5 @@ last. Every step was run on the reference laptop (CPU only); the times are what 
 - Everything is CPU-only: answers take seconds, not milliseconds; the README states the targets
   and the measured times side by side.
 - Calendar and web research (workflows 5 and 6) aren't built; say so if asked.
-- Open WebUI, Headlamp, SeaweedFS, n8n and ArgoCD have their own login behind the platform one.
+- One login for everything: Open WebUI, n8n and Grafana take the user from Authelia's headers, ArgoCD
+  signs in over OpenID Connect, Headlamp gets its token from Traefik (README §6.14).

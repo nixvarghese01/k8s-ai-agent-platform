@@ -10,7 +10,8 @@ logs no `Unhealthy` noise.
 
 ## Single sign-on + HTTPS (https://auth.ai.local)
 - Authelia in front of every UI (Traefik forwardAuth): sign in once, every `*.ai.local` opens;
-  12 h session, 2 h idle, lockout after 5 failures. Apps with their own login keep it.
+  12 h session, 2 h idle, lockout after 5 failures. No second login: apps with accounts take
+  the user from Authelia (headers, OpenID Connect for ArgoCD, a Traefik-added token for Headlamp).
 - A local CA (in WSL, root-only) signs `*.ai.local`; Windows trusts it, so Chrome/Edge show a
   padlock. Names moved from `*.local` to `*.ai.local` because one session cookie must cover all
   UIs and browsers won't share one across bare `.local`.

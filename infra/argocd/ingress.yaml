@@ -1,4 +1,5 @@
-# https://argocd.ai.local, behind the platform sign-on; ArgoCD's own admin login is a second layer
+# https://argocd.ai.local, behind the platform sign-on; ArgoCD then signs in through Authelia too
+# (OpenID Connect, sso.yaml)
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:

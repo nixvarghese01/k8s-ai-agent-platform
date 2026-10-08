@@ -34,5 +34,7 @@ if [ "${1:-}" = "--renew" ] || [ ! -f tls.crt ] || ! openssl x509 -checkend $((3
 fi
 
 kubectl -n kube-system create secret tls platform-tls --cert=tls.crt --key=tls.key --dry-run=client -o yaml | kubectl apply -f -
+# The CA certificate (public) for pods that call https://*.ai.local themselves (ArgoCD's sign-on)
+kubectl -n kube-system create configmap local-ai-ca --from-file=ca.crt --dry-run=client -o yaml | kubectl apply -f -
 openssl x509 -noout -subject -enddate -ext subjectAltName -in tls.crt
 echo "CA certificate for Windows: $DIR/ca.crt (windows-trust-ca.ps1 imports it)"

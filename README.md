@@ -580,7 +580,7 @@ model = mlflow.pyfunc.load_model("models:/message-triage@champion")
 model.predict(pd.DataFrame({"text": ["You have won a voucher, call now", "Dinner at 6?"]}))  # ['spam', 'ham']
 ```
 
-**Credentials:** generated once by `deploy.sh` and kept only in the cluster (Secrets `storage/postgres-secret`, `storage/seaweedfs-secret`, copies in `mlops`). `make s3-credentials` prints the SeaweedFS admin login (user `admin`) and the S3 key pair.
+**Credentials:** generated once by `deploy.sh` and kept only in the cluster (Secrets `storage/postgres-secret`, `storage/seaweedfs-secret`, copies in `mlops`). `make s3-credentials` prints the S3 key pair; the admin UI needs only the platform login (§6.14).
 
 **Why SeaweedFS, not MinIO:** MinIO switched to a source-only distribution in late 2025, so there are no maintained images. SeaweedFS is Apache-2.0, actively maintained, and the replacement Kubeflow Pipelines chose. Its `mini` mode runs master, volume, filer, S3 API and admin UI in one ~180 MB process. Anything that speaks S3 (boto3, MLflow, Dagster) uses it unchanged; moving to AWS S3 or Azure Blob later means changing the endpoint URL.
 
@@ -588,7 +588,18 @@ model.predict(pd.DataFrame({"text": ["You have won a voucher, call now", "Dinner
 
 ### 6.14 Single sign-on and HTTPS (Authelia)
 
-Every UI sits behind **one login**: open any `https://<name>.ai.local`, sign in once at https://auth.ai.local, and the session (12 h, or 2 h idle) opens all of them. Open WebUI, Headlamp and SeaweedFS keep their own login as a second layer.
+Every UI sits behind **one login**: open any `https://<name>.ai.local`, sign in once at https://auth.ai.local, and the session (12 h, or 2 h idle) opens all of them. No app asks for a second password; each one that has accounts takes the user from Authelia:
+
+| App | How it signs you in | Guard against forged sign-ins |
+|---|---|---|
+| Grafana | `Remote-User` header (auth proxy) | only from Traefik's address (`GF_AUTH_PROXY_WHITELIST`) |
+| Open WebUI | `Remote-Email` header: the account with that e-mail, created on first visit | NetworkPolicy: only Traefik reaches it |
+| n8n | `Remote-Email` header through an [external hook](infra/k3s/automation/n8n.yaml); Authelia's `admins` group is the owner, set up on first visit | the hook trusts the headers only from Traefik's address; webhooks still work for pods |
+| ArgoCD | OpenID Connect, Authelia as provider: *Log in via Authelia* goes straight through ([`argocd/sso.yaml`](infra/argocd/sso.yaml)) | client secret; `admins` → ArgoCD admin, others read-only |
+| Headlamp | Traefik adds its ServiceAccount token after the login (Middleware `ui/headlamp-token`, made by deploy.sh) | the token never reaches the browser |
+| SeaweedFS admin | its password is off | NetworkPolicy: pods reach only the S3 port |
+
+Traefik runs on the host network, so it reaches pods from `10.42.0.1` (the host's address on the pod network); that is what the guards check. The fallbacks still work: ArgoCD's `admin` (`make argocd-password`) and the Headlamp token (`headlamp-token`).
 
 ```text
 browser ─https─► Traefik (cert *.ai.local from the local CA)
@@ -604,7 +615,9 @@ browser ─https─► Traefik (cert *.ai.local from the local CA)
 | Traefik middleware `auth/authelia` on every ingress; HTTP → HTTPS redirect | [`ingress/ingresses.yaml`](infra/k3s/ingress/ingresses.yaml), [`traefik-config.yaml`](infra/k3s/ingress/traefik-config.yaml) |
 | Local CA + `*.ai.local` certificate (397 days; CA 10 years) | [`06-local-tls.sh`](infra/scripts/host/06-local-tls.sh) → Secret `kube-system/platform-tls`, [`ingress/tls.yaml`](infra/k3s/ingress/tls.yaml) |
 | Windows trusts the CA (Chrome, Edge) | [`windows-trust-ca.ps1`](infra/scripts/host/windows-trust-ca.ps1) |
-| Choose your username + password | [`set-login.sh`](infra/scripts/set-login.sh) |
+| Choose your username, e-mail + password | [`set-login.sh`](infra/scripts/set-login.sh) |
+| OpenID Connect provider (for ArgoCD); its keys in Secret `auth/authelia-secrets` | [`auth/authelia.yaml`](infra/k3s/auth/authelia.yaml), [`deploy.sh`](infra/scripts/deploy.sh) |
+| `auth.ai.local` inside the cluster (CoreDNS → Traefik), CA as ConfigMap `local-ai-ca` | [`ingress/in-cluster-dns.yaml`](infra/k3s/ingress/in-cluster-dns.yaml), [`06-local-tls.sh`](infra/scripts/host/06-local-tls.sh) |
 
 **First setup** (after `make deploy`): 1) `.\infra\scripts\host\windows-hosts.ps1` (admin) for the `*.ai.local` names; 2) `.\infra\scripts\host\windows-trust-ca.ps1` and click *Yes* on Windows' certificate warning; 3) `.\infra\scripts\platform.ps1 set-login` to choose your username and password (typed in the terminal, stored only as an argon2 hash in Secret `auth/authelia-users`). Until step 3, the only user is a bootstrap `admin` with a random password (Secret `auth/authelia-initial`, deleted by set-login).
 
@@ -614,7 +627,7 @@ browser ─https─► Traefik (cert *.ai.local from the local CA)
 
 **APIs:** in-cluster clients use the `*.svc.cluster.local` names and never pass the login. From Windows, `https://llm.ai.local` now needs a browser session; scripts should use a port-forward (§10.3).
 
-**Gotchas fixed during setup:** Kubernetes injects `AUTHELIA_PORT=tcp://...` for a Service named `authelia`, which Authelia reads as config and refuses to start (`enableServiceLinks: false`). Authelia rewrites `/app/.healthcheck.env` on start, so its root filesystem can't be read-only. Traefik on the host network used WSL's DNS and couldn't resolve `authelia.auth.svc.cluster.local` (`dnsPolicy: ClusterFirstWithHostNet`).
+**Gotchas fixed during setup:** Kubernetes injects `AUTHELIA_PORT=tcp://...` for a Service named `authelia`, which Authelia reads as config and refuses to start (`enableServiceLinks: false`). Authelia rewrites `/app/.healthcheck.env` on start, so its root filesystem can't be read-only. Traefik on the host network used WSL's DNS and couldn't resolve `authelia.auth.svc.cluster.local` (`dnsPolicy: ClusterFirstWithHostNet`). Authelia keeps sessions in memory, so a config change that restarts it signs you out once. SeaweedFS's `weed mini` re-reads flags from `/data/mini.options`, so removing `-admin.password` took a second restart.
 
 ### 6.15 Model serving as an agent tool (BentoML + Evidently)
 
@@ -663,7 +676,7 @@ Profile `observability` (~0.8 GB). Turn it on when you want to see what happened
 
 ### 6.17 Automation (n8n)
 
-Profile `automation` (~0.4 GB). https://n8n.ai.local asks for its own owner account on the first visit (a second layer behind the platform login). Two workflows ship with the platform, from [`automation/n8n-workflows.yaml`](infra/k3s/automation/n8n-workflows.yaml); n8n imports and activates them on every start, so edits made in the UI are replaced (export and paste them into that file to keep them).
+Profile `automation` (~0.4 GB). https://n8n.ai.local signs you in from the platform login; the first visit sets up n8n's owner account for you (§6.14). Two workflows ship with the platform, from [`automation/n8n-workflows.yaml`](infra/k3s/automation/n8n-workflows.yaml); n8n imports and activates them on every start, so edits made in the UI are replaced (export and paste them into that file to keep them).
 
 | Workflow | Trigger | Does | Measured |
 |---|---|---|---|
@@ -713,7 +726,7 @@ ArgoCD (in k3s, profile gitops) ◄────┘ polls development every ~3 mi
 | GHCR cleanup | [`cleanup.yml`](.github/workflows/cleanup.yml) | Weekly; keeps the newest 10 versions per image |
 | ArgoCD | [`infra/argocd/`](infra/argocd/kustomization.yaml) | v3.5.4 without Dex, notifications and ApplicationSet: **204 MB**. Application `platform` = `infra/k3s` on `development` |
 
-**Install ArgoCD** (once, inside Ubuntu): `make argocd`. It applies [`infra/argocd`](infra/argocd/kustomization.yaml), turns on the `gitops` profile and waits. UI: https://argocd.ai.local, user `admin`, password `make argocd-password` (second layer behind the sign-on). With the `gitops` profile off, nothing deploys from GitHub; `make deploy` still works by hand.
+**Install ArgoCD** (once, inside Ubuntu): `make argocd`. It applies [`infra/argocd`](infra/argocd/kustomization.yaml), turns on the `gitops` profile and waits. UI: https://argocd.ai.local, *Log in via Authelia* (the platform login, §6.14); user `admin` with `make argocd-password` stays as a fallback. With the `gitops` profile off, nothing deploys from GitHub; `make deploy` still works by hand.
 
 **Sync policy:** automatic, **no prune** (deleting a manifest never deletes its PVC and data; clean up by hand) and **no self-heal** (a local test or a profile switch isn't reverted until the next commit touches that resource). Replicas are ignored in diffs, since profiles own them. ArgoCD skips the static `EndpointSlice` for Ollama (excluded by ArgoCD's defaults); `make deploy` applies it.
 
@@ -790,17 +803,17 @@ Work down the list; each step depends only on the ones above it. If a step fails
 | 1 | https://auth.ai.local | Authelia sign-in, then "Authenticated" with a *Logout* button; a padlock in the address bar | `curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" https://auth.ai.local` → `200` |
 | 2 | https://llm.ai.local | LiteLLM's API docs (Swagger) | `curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" https://llm.ai.local` → `302` (to sign-in) |
 | 3 | https://qdrant.ai.local/dashboard | Qdrant's web UI, collection `docs` from the RAG index (6.12) | same → `302` |
-| 4 | https://chat.ai.local | Open WebUI's own sign-in (second layer); then pick `chat-default` and send "hi" | same → `302` |
+| 4 | https://chat.ai.local | Signed in from the platform login (your account, by e-mail); pick `chat-default` and send "hi" | same → `302` |
 | 5 | https://agent.ai.local | Agent UI. Ask "What was decided in the meeting on 2026-10-01?" (5–10 s) and expand the 🔧 line | same → `302` |
-| 6 | https://headlamp.ai.local | Headlamp's token login: `.\infra\scripts\platform.ps1 headlamp-token`, paste. **Workloads → Pods** shows every pod ([6.11](#611-cluster-dashboard-headlamp)) | same → `302` |
+| 6 | https://headlamp.ai.local | No token prompt (Traefik adds it). **Workloads → Pods** shows every pod ([6.11](#611-cluster-dashboard-headlamp)) | same → `302` |
 | 7 | https://mlflow.ai.local | MLflow: *Models* → `message-triage` with alias `champion` ([6.13](#613-training-pipeline-mlflow--dagster--optuna)) | same → `302` |
 | 8 | https://dagster.ai.local | Dagster: *Catalog* → `triage_model`, *Automation* → `triage_nightly` | same → `302` |
-| 9 | https://s3.ai.local | SeaweedFS admin sign-in (second layer): user `admin`, password from `make s3-credentials` | same → `302` |
+| 9 | https://s3.ai.local | SeaweedFS admin dashboard, no second sign-in | same → `302` |
 | 10 | https://triage.ai.local | BentoML API docs for the message classifier (`mlops` profile); try `POST /classify` ([6.15](#615-model-serving-as-an-agent-tool-bentoml--evidently)) | same → `302` |
 | 11 | https://phoenix.ai.local | Phoenix projects `agent` and `litellm` with their traces (`observability` profile, [6.16](#616-observability-phoenix-prometheus-grafana)) | same → `302` |
 | 12 | https://grafana.ai.local | Grafana's *Platform overview* dashboard, signed in through the platform login | same → `302` |
-| 13 | https://n8n.ai.local | n8n: create its owner account once (second layer), then *Workflows* shows *Email triage* and *Daily briefing* (`automation` profile, [6.17](#617-automation-n8n)) | same → `302` |
-| 14 | https://argocd.ai.local | ArgoCD sign-in (user `admin`, `make argocd-password`), then the `platform` app: Synced, Healthy (`gitops` profile, [7](#7-cicd-and-gitops)) | same → `302` |
+| 13 | https://n8n.ai.local | n8n opens signed in as owner; *Workflows* shows *Email triage* and *Daily briefing* (`automation` profile, [6.17](#617-automation-n8n)) | same → `302` |
+| 14 | https://argocd.ai.local | *Log in via Authelia*, then the `platform` app: Synced, Healthy (`gitops` profile, [7](#7-cicd-and-gitops)) | same → `302` |
 
 Any `*.ai.local` page answering `302` to `auth.ai.local` is up and protected; a `404` comes from Traefik (no Ingress for that name: a typo, or not deployed yet); a certificate warning means `windows-trust-ca.ps1` hasn't run (`curl.exe` needs `--ssl-no-revoke`: Windows' TLS asks for a revocation check that a private CA can't answer; browsers don't); "can't reach this site" means the hosts entry is missing.
 

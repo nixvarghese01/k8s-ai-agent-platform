@@ -50,8 +50,7 @@ rag-index: ## index the shared folder into Qdrant now (ARGS=--rebuild to start o
 train:     ## run the message-triage training now (queued; watch it at https://dagster.ai.local)
 	kubectl -n mlops exec deploy/dagster-daemon -- dagster job launch -j triage_training -w workspace.yaml
 
-s3-credentials: ## print the SeaweedFS admin UI password (user admin) and the S3 key pair
-	@printf 'admin UI (https://s3.ai.local): admin / %s\n' "$$(kubectl -n storage get secret seaweedfs-secret -o jsonpath='{.data.admin-password}' | base64 -d)"
+s3-credentials: ## print the S3 key pair (the admin UI at https://s3.ai.local needs only the platform login)
 	@printf 'S3 access key: %s\nS3 secret key: %s\n' "$$(kubectl -n storage get secret seaweedfs-secret -o jsonpath='{.data.access-key}' | base64 -d)" "$$(kubectl -n storage get secret seaweedfs-secret -o jsonpath='{.data.secret-key}' | base64 -d)"
 
 set-login: ## choose the single sign-on username + password for every *.ai.local UI

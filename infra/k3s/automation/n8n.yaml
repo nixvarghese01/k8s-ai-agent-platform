@@ -1,7 +1,93 @@
 # n8n at https://n8n.ai.local (README §6.17), profile automation. Workflows come from
-# automation/n8n-workflows.yaml (imported and activated on every start). n8n keeps its own
-# owner login as a second layer behind the platform sign-on; create it on first visit.
-# SQLite on a volume (not Postgres) so the automation profile doesn't need the mlops one.
+# automation/n8n-workflows.yaml (imported and activated on every start). Signed in by the
+# platform login through the hook below; SQLite on a volume (not Postgres) so the automation
+# profile doesn't need the mlops one.
+#
+# Sign-on: n8n's own SSO is a paid feature, so an external hook (n8n's documented extension
+# point) signs the browser in from the Remote-* headers Traefik adds after Authelia: the user
+# with that e-mail, or for Authelia's "admins" group the owner, set up on the first visit with
+# a random password. It trusts the headers only from 10.42.0.1-style host addresses, i.e.
+# through Traefik on the host network; a pod calling n8n directly (webhooks) gets nothing.
+# It uses n8n internals (AuthService, OwnershipService): check it after an n8n upgrade.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: n8n-sso-hook
+  namespace: automation
+data:
+  sso.js: |
+    const os = require('os');
+    const { randomBytes } = require('crypto');
+    const n8n = require('module').createRequire('/usr/local/lib/node_modules/n8n/dist/index.js');
+
+    // The host's address on this pod's network (flannel: the .1 of the pod's /24)
+    const host = Object.values(os.networkInterfaces()).flat()
+      .filter((i) => i.family === 'IPv4' && !i.internal)
+      .map((i) => i.address.replace(/\.\d+$/, '.1'));
+
+    module.exports = {
+      n8n: {
+        ready: [
+          async function ({ app }) {
+            const { Container } = n8n('@n8n/di');
+            const { UserRepository } = n8n('@n8n/db');
+            const { AuthService } = n8n('./auth/auth.service');
+            const { OwnershipService } = n8n('./services/ownership.service');
+            const auth = Container.get(AuthService);
+            const users = Container.get(UserRepository);
+
+            const valid = (token, browserId) => {
+              try {
+                const p = auth.jwtService.verify(token, { algorithms: ['HS256'] });
+                return !p.browserId || p.browserId === auth.hash(browserId);
+              } catch {
+                return false;
+              }
+            };
+
+            async function userFor(req, email) {
+              const user = await users.findOne({ where: { email }, relations: ['role'] });
+              if (user) return user;
+              const groups = String(req.headers['remote-groups'] || '').split(',').map((g) => g.trim());
+              if (!groups.includes('admins')) return null;
+              const owner = await users.findOne({ where: { role: { slug: 'global:owner' } }, relations: ['role'] });
+              if (owner?.email) return owner;
+              const name = String(req.headers['remote-name'] || email.split('@')[0]);
+              return Container.get(OwnershipService).setupOwner({
+                email, firstName: name, lastName: '', password: randomBytes(24).toString('base64'),
+              });
+            }
+
+            async function signOn(req, res, next) {
+              try {
+                const email = String(req.headers['remote-email'] || '').toLowerCase();
+                const browserId = req.headers['browser-id'];
+                const from = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
+                if (!email || !browserId || !req.path.startsWith('/rest/') || !host.includes(from)) return next();
+                const cookies = String(req.headers.cookie || '').split(/;\s*/).filter(Boolean);
+                const current = cookies.find((c) => c.startsWith('n8n-auth='));
+                if (current && valid(current.slice(9), browserId)) return next();
+                const user = await userFor(req, email);
+                if (!user || user.disabled) return next();
+                auth.issueCookie(res, user, false, browserId);
+                // and for this request too, so the page doesn't first land on n8n's sign-in
+                const token = auth.issueJWT(user, false, browserId);
+                req.headers.cookie = [...cookies.filter((c) => !c.startsWith('n8n-auth=')), `n8n-auth=${token}`].join('; ');
+              } catch (e) {
+                console.error('sso hook:', e);
+              }
+              next();
+            }
+
+            app.use(signOn); // then move it in front of n8n's own middleware and routes
+            const stack = app.router.stack;
+            stack.unshift(stack.pop());
+            console.log(`sso hook: signing in from Remote-* headers sent by ${host.join(', ')}`);
+          },
+        ],
+      },
+    };
+---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -109,6 +195,8 @@ spec:
             # Only the briefings folder is writable for the "Read/Write Files" node
             - name: N8N_RESTRICT_FILE_ACCESS_TO
               value: /briefings
+            - name: EXTERNAL_HOOK_FILES
+              value: /hooks/sso.js # sign-on from the platform login (top of this file)
           ports:
             - name: http
               containerPort: 5678
@@ -119,6 +207,8 @@ spec:
               mountPath: /home/node/.n8n
             - name: briefings
               mountPath: /briefings
+            - name: sso-hook
+              mountPath: /hooks
           resources:
             requests:
               cpu: 20m
@@ -145,6 +235,9 @@ spec:
         - name: workflows
           configMap:
             name: n8n-workflows
+        - name: sso-hook
+          configMap:
+            name: n8n-sso-hook
         # Daily briefings land in the shared folder, so the document search indexes them too
         - name: briefings
           hostPath:

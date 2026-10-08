@@ -125,7 +125,9 @@ metadata:
   annotations:
     traefik.ingress.kubernetes.io/router.entrypoints: websecure
     traefik.ingress.kubernetes.io/router.tls: "true"
-    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd
+    # After the platform login, Traefik adds Headlamp's ServiceAccount token (Middleware
+    # ui/headlamp-token, made by deploy.sh because it holds the token): no token prompt
+    traefik.ingress.kubernetes.io/router.middlewares: auth-authelia@kubernetescrd,ui-headlamp-token@kubernetescrd
 spec:
   ingressClassName: traefik
   rules:

@@ -1,5 +1,5 @@
 # Open WebUI chat, backed by LiteLLM (LLM + embeddings, served by host Ollama) and Qdrant (RAG vectors).
-# UI: https://chat.ai.local (see ingress/ingresses.yaml). The first account created becomes admin.
+# UI: https://chat.ai.local (see ingress/ingresses.yaml), signed in by the platform login.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -46,6 +46,15 @@ spec:
             # Accounts: the first one created is admin; nobody else can sign up
             - name: ENABLE_SIGNUP
               value: "false"
+            # Sign-on: the platform login (Authelia) passes the user's e-mail; Open WebUI signs
+            # into the account with that address, and creates it on first visit (README §6.14).
+            # Only Traefik sets these headers after Authelia checked the session.
+            - name: WEBUI_AUTH_TRUSTED_EMAIL_HEADER
+              value: Remote-Email
+            - name: WEBUI_AUTH_TRUSTED_NAME_HEADER
+              value: Remote-Name
+            - name: WEBUI_AUTH_SIGNOUT_REDIRECT_URL
+              value: https://auth.ai.local/logout
             # Created by infra/scripts/deploy.sh; without it the key is regenerated on every
             # start and everyone is logged out
             - name: WEBUI_SECRET_KEY
@@ -145,3 +154,16 @@ spec:
     - name: http
       port: 8080
       targetPort: http
+---
+# Open WebUI trusts the Remote-Email header (sign-on), so only Traefik may reach it: it runs on
+# the host network, which k3s's network policy always lets through. Pods get nothing.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: open-webui-via-traefik
+  namespace: ui
+spec:
+  podSelector:
+    matchLabels:
+      app: open-webui
+  policyTypes: [Ingress]

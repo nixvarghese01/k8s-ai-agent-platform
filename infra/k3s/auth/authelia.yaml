@@ -1,7 +1,9 @@
 # Authelia: single sign-on for every *.ai.local UI (README §6.14). Traefik asks it about each
 # request (Middleware auth/authelia below, referenced by every ingress); without a session the
 # browser goes to https://auth.ai.local to sign in once, and the session cookie on ai.local
-# then opens every UI until it expires. Apps with their own login keep it as a second layer.
+# then opens every UI until it expires. Apps with a login of their own take the user from
+# Authelia too: Grafana, Open WebUI and n8n from the Remote-* headers, ArgoCD over OpenID
+# Connect, Headlamp from a token Traefik adds, SeaweedFS has its password switched off.
 #   Users: Secret auth/authelia-users (users_database.yml, argon2 hashes), set with
 #          `.\infra\scripts\platform.ps1 set-login` (Windows) or `make set-login` (Ubuntu)
 #   Secrets for sessions/storage: Secret auth/authelia-secrets, created once by deploy.sh
@@ -50,6 +52,26 @@ data:
     notifier:
       filesystem:
         filename: /data/notification.txt
+    # OpenID Connect for apps that only trust their own login otherwise (ArgoCD). Signing key,
+    # HMAC secret and client secret digests come from Secret auth/authelia-secrets (deploy.sh)
+    # through the template filter. ArgoCD reaches https://auth.ai.local in-cluster through the
+    # CoreDNS rewrite in ingress/in-cluster-dns.yaml.
+    identity_providers:
+      oidc:
+        jwks:
+          - key_id: main
+            algorithm: RS256
+            use: sig
+            key: {{ secret "/secrets/oidc-jwks-key" | mindent 10 "|" | msquote }}
+        clients:
+          - client_id: argocd
+            client_name: Argo CD
+            client_secret: '{{ secret "/secrets/oidc-argocd-digest" }}'
+            authorization_policy: one_factor
+            consent_mode: implicit # same user, same machine: no "allow Argo CD?" screen
+            redirect_uris: [https://argocd.ai.local/auth/callback]
+            scopes: [openid, profile, email, groups]
+            token_endpoint_auth_method: client_secret_basic
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -95,6 +117,10 @@ spec:
           image: ghcr.io/authelia/authelia:4.39.28@sha256:bd97cff4fcbf715b5ff1f9ae286afbe6033afce385302520b0368122d43a6f54
           args: ["--config", "/config/configuration.yml"]
           env:
+            - name: X_AUTHELIA_CONFIG_FILTERS
+              value: template # {{ secret "..." }} in the config reads the OIDC secrets
+            - name: AUTHELIA_IDENTITY_PROVIDERS_OIDC_HMAC_SECRET_FILE
+              value: /secrets/oidc-hmac-secret
             - name: AUTHELIA_SESSION_SECRET_FILE
               value: /secrets/session-secret
             - name: AUTHELIA_STORAGE_ENCRYPTION_KEY_FILE

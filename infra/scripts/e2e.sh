@@ -110,6 +110,22 @@ def voice():
     return ok("gym" in text.lower(), f"speech -> text: {text!r}")
 check("speech round trip", voice)
 
+print("== sign-on guards (a pod must not be able to sign in by sending Remote-* headers)")
+def blocked(url):
+    try:
+        httpx.get(url, timeout=5)
+    except (httpx.ConnectError, httpx.ConnectTimeout):
+        return "blocked"
+    raise AssertionError("reachable from a pod")
+check("open webui only via traefik", lambda: blocked("http://open-webui.ui.svc.cluster.local:8080/health"))
+check("seaweedfs admin only via traefik", lambda: blocked("http://seaweedfs.storage.svc.cluster.local:23646/"))
+forged = {"Remote-User": "admin", "Remote-Email": "x@ai.local", "Remote-Groups": "admins", "browser-id": "e2e"}
+check("grafana ignores forged header", lambda: ok(httpx.get("http://grafana.observability.svc.cluster.local:3000/api/user", headers=forged, timeout=10).status_code == 401, "401"))
+def n8n_forged():
+    r = httpx.get("http://n8n.automation.svc.cluster.local:5678/rest/login", headers=forged, timeout=10)
+    return ok(r.status_code == 401 and "n8n-auth" not in r.headers.get("set-cookie", ""), "401, no session")
+check("n8n ignores forged header", n8n_forged)
+
 print(f"in-cluster failures: {fails}")
 PY
 n=$(sed -n 's/^in-cluster failures: //p' "$out"); rm -f "$out"
@@ -137,6 +153,16 @@ for h in auth chat llm agent qdrant headlamp mlflow dagster s3 triage phoenix gr
     *) printf "FAIL  https://%s.ai.local: %s\n" "$h" "$code"; fails=$((fails+1)) ;;
   esac
 done
+# ArgoCD over OpenID Connect: it reaches Authelia in-cluster, and Authelia accepts the client
+if kubectl -n argocd get deploy argocd-server >/dev/null 2>&1; then
+  argo=$(kubectl -n argocd get pod -l app.kubernetes.io/name=argocd-server -o jsonpath='{.items[0].status.podIP}')
+  authz=$(curl -s -o /dev/null -w '%{redirect_url}' -H 'Host: argocd.ai.local' -H 'X-Forwarded-Proto: https' "http://$argo:8080/auth/login")
+  flow=$(curl -s --cacert /var/lib/local-ai-ca/ca.crt --resolve "auth.ai.local:443:$IP" -o /dev/null -w '%{redirect_url}' "$authz" 2>/dev/null)
+  [[ "$authz" == https://auth.ai.local/api/oidc/authorization?client_id=argocd* && "$flow" == *flow=openid_connect* ]] &&
+    echo "PASS  argocd sign-on: OpenID Connect through Authelia" || { echo "FAIL  argocd sign-on: ${authz:0:80} -> ${flow:0:80}"; fails=$((fails+1)); }
+fi
+kubectl -n ui get middleware headlamp-token >/dev/null 2>&1 && echo "PASS  headlamp sign-on: token middleware present" ||
+  { echo "FAIL  headlamp sign-on: Middleware ui/headlamp-token missing (run deploy.sh)"; fails=$((fails+1)); }
 
 echo
 [ "$fails" = 0 ] && echo "ALL PASSED" || echo "$fails check(s) FAILED"

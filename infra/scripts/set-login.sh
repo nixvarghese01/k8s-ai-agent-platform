@@ -1,7 +1,8 @@
 #!/bin/bash
-# Set the single sign-on user for every *.ai.local UI (README §6.14). Asks for a username and a
-# password (twice, not shown), stores only an argon2 hash in Secret auth/authelia-users, and
-# restarts Authelia so it applies at once (everyone signs in again).
+# Set the single sign-on user for every *.ai.local UI (README §6.14). Asks for a username, an
+# e-mail address (Open WebUI and n8n match their accounts by it) and a password (twice, not
+# shown), stores only an argon2 hash in Secret auth/authelia-users, and restarts Authelia so it
+# applies at once (everyone signs in again).
 #
 #   From Windows:  .\infra\scripts\platform.ps1 set-login
 #   Inside Ubuntu: make set-login            (or: bash infra/scripts/set-login.sh)
@@ -18,15 +19,15 @@ hash() { # argon2id hash with Authelia's own tool, in a throwaway pod (works bef
     --command -- authelia crypto hash generate argon2 --password "$1" | sed -n 's/^Digest: //p'
 }
 
-store() { # $1 username, $2 display name, $3 hash
-  printf 'users:\n  %s:\n    disabled: false\n    displayname: "%s"\n    password: "%s"\n    groups: [admins]\n' "$1" "$2" "$3" |
+store() { # $1 username, $2 display name, $3 hash, $4 e-mail
+  printf 'users:\n  %s:\n    disabled: false\n    displayname: "%s"\n    email: "%s"\n    password: "%s"\n    groups: [admins]\n' "$1" "$2" "$4" "$3" |
     kubectl -n auth create secret generic authelia-users --from-file=users_database.yml=/dev/stdin \
       --dry-run=client -o yaml | kubectl apply -f - >/dev/null
 }
 
 if [ "${1:-}" = "--bootstrap" ]; then
   pw=$(head -c 18 /dev/urandom | base64 | tr -d '/+=' | head -c 20)
-  store admin "Admin" "$(hash "$pw")"
+  store admin "Admin" "$(hash "$pw")" "admin@ai.local"
   kubectl -n auth create secret generic authelia-initial --from-literal=username=admin \
     --from-literal=password="$pw" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
   echo "Created sign-on user 'admin' with a random password (run set-login to choose your own)."
@@ -37,6 +38,12 @@ default_user=${SUDO_USER:-$(id -un 1000 2>/dev/null || echo admin)}
 read -rp "Username [$default_user]: " user
 user=${user:-$default_user}
 [[ "$user" =~ ^[a-zA-Z0-9._-]+$ ]] || { echo "use letters, digits, . _ - only" >&2; exit 1; }
+current_email=$(kubectl -n auth get secret authelia-users -o jsonpath='{.data.users_database\.yml}' 2>/dev/null |
+  base64 -d | sed -n 's/^ *email: "\(.*\)"/\1/p' | grep -v '^admin@ai.local$' || true)
+default_email=${current_email:-$user@ai.local}
+read -rp "E-mail, the one your Open WebUI account uses [$default_email]: " email
+email=${email:-$default_email}
+[[ "$email" =~ ^[^@\ \"]+@[^@\ \"]+$ ]] || { echo "that isn't an e-mail address" >&2; exit 1; }
 while true; do
   read -rsp "New password (12+ characters): " pw; echo
   [ ${#pw} -ge 12 ] || { echo "too short"; continue; }
@@ -48,7 +55,7 @@ done
 echo "Hashing..."
 digest=$(hash "$pw")
 [ -n "$digest" ] || { echo "hashing failed (is the platform up?)" >&2; exit 1; }
-store "$user" "$user" "$digest"
+store "$user" "$user" "$digest" "$email"
 kubectl -n auth delete secret authelia-initial --ignore-not-found >/dev/null
 kubectl -n auth rollout restart deploy/authelia >/dev/null
 kubectl -n auth rollout status deploy/authelia --timeout=2m >/dev/null

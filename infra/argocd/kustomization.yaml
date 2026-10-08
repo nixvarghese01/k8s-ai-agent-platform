@@ -1,8 +1,9 @@
 # ArgoCD for the platform (README §7), profile gitops. Install / update:
 #   kubectl apply -k infra/argocd     (or: bash infra/argocd/install.sh)
-# Upstream v3.5.4, trimmed for a laptop: no Dex (login is the platform sign-on + ArgoCD's admin
-# user), no notifications, no ApplicationSet controller; the server runs without its own TLS
-# behind Traefik. What's left: server (UI/API), repo-server, application-controller, redis.
+# Upstream v3.5.4, trimmed for a laptop: no Dex (ArgoCD talks OpenID Connect to Authelia
+# directly, sso.yaml), no notifications, no ApplicationSet controller; the server runs without
+# its own TLS behind Traefik. What's left: server (UI/API), repo-server, application-controller,
+# redis.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: argocd
@@ -13,6 +14,7 @@ resources:
   - platform-app.yaml
 patches:
   - path: trim.yaml
+  - path: sso.yaml
   - target:
       kind: Deployment
       name: argocd-(server|repo-server|redis)

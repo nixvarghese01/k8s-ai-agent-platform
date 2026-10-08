@@ -1,0 +1,16 @@
+# auth.ai.local from inside the cluster (README §6.14): apps that sign in over OpenID Connect
+# (ArgoCD) call Authelia at the same https://auth.ai.local address the browser uses, because the
+# issuer in the tokens must match. CoreDNS answers that name with Traefik's Service, so the
+# request takes the same HTTPS route as the browser's. k3s's CoreDNS imports *.override from
+# this ConfigMap and reloads it on its own within a minute.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  ai-local.override: |
+    rewrite stop {
+      name exact auth.ai.local traefik.kube-system.svc.cluster.local
+      answer auto
+    }
