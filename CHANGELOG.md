@@ -34,4 +34,4 @@ First release: the full platform from the 8-week build plus hardening. All 10 us
 - The spam classifier is trained on SMS spam and misses phishing e-mails (#31).
 - Model digests aren't pinned yet (#32).
 
-[1.0.0]: https://github.com/nixvarghese01/local-ai-platform/releases/tag/v1.0.0
+[1.0.0]: https://github.com/nixvarghese01/k8s-ai-agent-platform/releases/tag/v1.0.0

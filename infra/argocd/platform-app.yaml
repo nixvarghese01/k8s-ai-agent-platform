@@ -12,7 +12,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/nixvarghese01/local-ai-platform.git
+    repoURL: https://github.com/nixvarghese01/k8s-ai-agent-platform.git
     targetRevision: development
     path: infra/k3s
     directory:

@@ -1,4 +1,4 @@
-# Run inside Ubuntu from the repo root (`wsl`, then `cd /mnt/e/Github/local-ai-platform`).
+# Run inside Ubuntu from the repo root (`wsl`, then `cd /mnt/e/Github/k8s-ai-agent-platform`).
 # From Windows use infra/scripts/platform.ps1 instead; it can also shut Ubuntu down.
 # up/down need sudo (systemctl).
 

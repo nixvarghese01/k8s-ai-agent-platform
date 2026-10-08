@@ -1,7 +1,7 @@
-# Local AI Platform: Self-Hosted AI Agents, RAG and MLOps on Kubernetes
+# K8s AI Agent Platform: Self-Hosted AI Agents, RAG and MLOps on Kubernetes
 
-[![CI](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/ci.yml)
-[![Build](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/build.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/build.yml)
+[![CI](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/ci.yml)
+[![Build](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/build.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Kubernetes](https://img.shields.io/badge/Kubernetes-k3s%201.36-326CE5?logo=kubernetes&logoColor=white)
 ![GitOps](https://img.shields.io/badge/GitOps-Argo%20CD-EF7B4D?logo=argo&logoColor=white)
@@ -29,8 +29,8 @@
 On Windows 11 with WSL2 (full steps in [6. Installation](#6-installation)):
 
 ```powershell
-git clone https://github.com/nixvarghese01/local-ai-platform E:\Github\local-ai-platform
-cd E:\Github\local-ai-platform
+git clone https://github.com/nixvarghese01/k8s-ai-agent-platform E:\Github\k8s-ai-agent-platform
+cd E:\Github\k8s-ai-agent-platform
 .\infra\scripts\host\00-assess.ps1          # readiness report: what's missing and the next step
 # once: WSL + k3s + Ollama + models (6.1–6.4), then `make deploy` inside Ubuntu (6.5)
 .\infra\scripts\host\windows-hosts.ps1      # *.ai.local names (admin)
@@ -175,7 +175,7 @@ Agent runs + all LLM calls (via LiteLLM) ──► Phoenix (traces)     Traefik,
 ## 4. Repository Structure
 
 ```text
-local-ai-platform/
+k8s-ai-agent-platform/
 ├── README.md
 ├── LICENSE                 # MIT
 ├── local-up.ps1            # .\local-up: start the platform from Windows (wraps platform.ps1 up)
@@ -301,8 +301,8 @@ Every step has a script under [`infra/scripts/host/`](infra/scripts/host/), numb
 Two ways to run a Linux script from Windows PowerShell (repo on `D:`, `E:`, … is reachable in Ubuntu under `/mnt/<drive>/...`):
 
 ```powershell
-wsl -u root -- bash /mnt/e/Github/local-ai-platform/infra/scripts/host/01-install-k3s-helm-ollama.sh   # as root
-wsl -- bash /mnt/e/Github/local-ai-platform/infra/scripts/host/02-pull-models.sh                      # as your user
+wsl -u root -- bash /mnt/e/Github/k8s-ai-agent-platform/infra/scripts/host/01-install-k3s-helm-ollama.sh   # as root
+wsl -- bash /mnt/e/Github/k8s-ai-agent-platform/infra/scripts/host/02-pull-models.sh                      # as your user
 ```
 
 Keep a local, git-ignored `docs/DEVICE_LOG.md` of what you ran and how to undo it.
@@ -312,8 +312,8 @@ Keep a local, git-ignored `docs/DEVICE_LOG.md` of what you ran and how to undo i
 Clone on Windows, on the drive you'll use for WSL (the one with the most free space):
 
 ```powershell
-git clone https://github.com/nixvarghese01/local-ai-platform E:\Github\local-ai-platform
-cd E:\Github\local-ai-platform
+git clone https://github.com/nixvarghese01/k8s-ai-agent-platform E:\Github\k8s-ai-agent-platform
+cd E:\Github\k8s-ai-agent-platform
 .\infra\scripts\host\00-assess.ps1
 ```
 
@@ -401,7 +401,7 @@ Script: [`04-install-docker.sh`](infra/scripts/host/04-install-docker.sh) (root)
 
 ### 6.5 Deploy the platform
 
-Inside Ubuntu, from the repo (`cd /mnt/e/Github/local-ai-platform`):
+Inside Ubuntu, from the repo (`cd /mnt/e/Github/k8s-ai-agent-platform`):
 
 ```bash
 make images        # = bash infra/scripts/build-images.sh: build the agent, MCP and UI images (first time, and after code changes)

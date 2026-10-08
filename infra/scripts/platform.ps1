@@ -23,7 +23,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $distro = 'Ubuntu-26.04'
 
-# E:\Github\local-ai-platform\infra\scripts -> /mnt/e/Github/local-ai-platform/infra/scripts
+# E:\Github\k8s-ai-agent-platform\infra\scripts -> /mnt/e/Github/k8s-ai-agent-platform/infra/scripts
 $drive = $PSScriptRoot.Substring(0, 1).ToLower()
 $here = "/mnt/$drive" + ($PSScriptRoot.Substring(2) -replace '\\', '/')
 

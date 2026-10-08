@@ -61,7 +61,7 @@ $pages = [ordered]@{
     argocd   = @('https://argocd.ai.local/applications/argocd/platform', "/log in via authelia/i.test($text) || $text.includes('Synced')", 60,
         "[...document.querySelectorAll('button, a')].find(b => /log in via authelia/i.test(b.innerText))?.click()",
         "/app health\s+healthy/i.test($text) && $text.includes('Synced')")
-    actions  = @('https://github.com/nixvarghese01/local-ai-platform/actions', "$text.includes('build')", 60)
+    actions  = @('https://github.com/nixvarghese01/k8s-ai-agent-platform/actions', "$text.includes('build')", 60)
 }
 
 # --- minimal DevTools protocol client (System.Net.WebSockets, works in Windows PowerShell 5.1)

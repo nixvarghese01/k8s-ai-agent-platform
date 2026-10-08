@@ -5,7 +5,7 @@
 # Windows trusts the CA after windows-trust-ca.ps1, so Chrome/Edge show a normal padlock.
 #
 # Run as root inside Ubuntu (or deploy.sh runs it):
-#   wsl -u root -- bash /mnt/e/Github/local-ai-platform/infra/scripts/host/06-local-tls.sh [--renew]
+#   wsl -u root -- bash /mnt/e/Github/k8s-ai-agent-platform/infra/scripts/host/06-local-tls.sh [--renew]
 # Safe to re-run: keeps the CA and a certificate that is still valid for 30+ days.
 #   --renew  issue a new certificate now (it lasts 397 days; the CA lasts 10 years)
 set -euo pipefail
