@@ -108,6 +108,10 @@ def test_voice_api_speaks_and_transcribes(monkeypatch):
     r = api.post("/v1/audio/speech", json={"input": "Good morning", "voice": "alloy"})
     assert r.status_code == 200 and r.headers["content-type"] == "audio/wav" and r.content[:4] == b"RIFF"
     assert seen["tts"] == ("Good morning", voice_server.PIPER_VOICE)  # OpenAI voice names map to Piper's
+    for name in ("../../etc/x-y", "en_US-other-medium"):  # CodeQL py/path-injection: never a file name
+        seen.clear()
+        api.post("/v1/audio/speech", json={"input": "Hi", "voice": name})
+        assert seen["tts"] == ("Hi", voice_server.PIPER_VOICE)
 
     r = api.post("/v1/audio/transcriptions", files={"file": ("a.wav", wav_bytes(), "audio/wav")}, data={"model": "whisper-1"})
     assert r.json() == {"text": "hello there"}

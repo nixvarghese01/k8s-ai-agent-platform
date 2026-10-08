@@ -237,6 +237,18 @@ def test_split_request():
     assert split_request("What did we decide?") == ["What did we decide?"]
     many = split_request("do a b and then do c d and then do e f and then do g h and then do i j")
     assert len(many) == 4 and many[-1] == "do g h and then do i j"
+    assert split_request("Read the note,\nthen list my files") == ["Read the note", "list my files"]
+
+
+def test_split_request_is_linear_on_long_whitespace():
+    """CodeQL py/polynomial-redos: a long run of spaces mustn't take quadratic time."""
+    import time
+
+    from graph import split_request
+
+    t = time.perf_counter()
+    split_request("a" + " " * 50_000 + "b")
+    assert time.perf_counter() - t < 0.5
 
 
 def test_each_part_is_answered_in_turn_in_one_conversation(monkeypatch):
