@@ -1,0 +1,3 @@
+# The maintainer owns everything: a pull request into main needs the code owner, so only
+# @nixvarghese01 can release development to main (CONTRIBUTING.md "Branching model").
+* @nixvarghese01

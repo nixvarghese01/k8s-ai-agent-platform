@@ -1,0 +1,38 @@
+# Branch policy (CONTRIBUTING.md "Branching model"): which branch may open a pull request into
+# which. A required check on main and development, so a wrong source branch can't be merged.
+#   main        <- development (release), hotfix/*
+#   development <- feature/*, bugfix/*, hotfix/*, docs/*, chore/*, refactor/*, test/*, ci/*,
+#                  dependabot/*, main (back-merge after a hotfix)
+name: branch-policy
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [development, main]
+
+permissions: {}
+
+jobs:
+  policy:
+    name: branch policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Source branch allowed for this target
+        env:
+          SOURCE: ${{ github.head_ref }}
+          TARGET: ${{ github.base_ref }}
+        run: |
+          case "$TARGET" in
+            main)
+              case "$SOURCE" in
+                development|hotfix/*) ;;
+                *) echo "::error::main takes pull requests only from development (a release) or hotfix/*, not '$SOURCE'"; exit 1 ;;
+              esac ;;
+            development)
+              case "$SOURCE" in
+                feature/*|bugfix/*|hotfix/*|docs/*|chore/*|refactor/*|test/*|ci/*|dependabot/*|main) ;;
+                *) echo "::error::name the branch feature/, bugfix/, hotfix/, docs/, chore/, refactor/, test/ or ci/ (got '$SOURCE')"; exit 1 ;;
+              esac ;;
+          esac
+          echo "ok: $SOURCE -> $TARGET"

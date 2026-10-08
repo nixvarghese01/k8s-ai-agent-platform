@@ -3,6 +3,8 @@
 Notable changes, newest first. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions: [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
 ## [1.0.0] - 2026-10-08
 
 First release: the full platform from the 8-week build plus hardening. All 10 use cases work;
@@ -27,6 +29,9 @@ First release: the full platform from the 8-week build plus hardening. All 10 us
   speed; golden-set evaluation and quality gate; audit trail and rollback.
 - **Delivery:** GitHub Actions (tests, linters, image builds to GHCR pinned by digest), Argo CD
   GitOps, `make e2e` end-to-end check.
+- **Repository:** branching model (feature/bugfix/hotfix/docs branches into `development`,
+  releases `development` → `main`), branch protection rulesets, `branch policy` check,
+  `CODEOWNERS`.
 - **Docs:** README, weekly notes, demo script, `SECURITY.md`, `CONTRIBUTING.md`.
 
 ### Known limitations
@@ -34,4 +39,5 @@ First release: the full platform from the 8-week build plus hardening. All 10 us
 - The spam classifier is trained on SMS spam and misses phishing e-mails (#31).
 - Model digests aren't pinned yet (#32).
 
+[Unreleased]: https://github.com/nixvarghese01/k8s-ai-agent-platform/compare/v1.0.0...development
 [1.0.0]: https://github.com/nixvarghese01/k8s-ai-agent-platform/releases/tag/v1.0.0
