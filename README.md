@@ -1,14 +1,56 @@
-# Local AI Platform
+# Local AI Platform: Self-Hosted AI Agents, RAG and MLOps on Kubernetes
 
-A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 26.04)** on a single laptop, with no cloud spend and no GPU.
+[![CI](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/ci.yml)
+[![Build](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/build.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/local-ai-platform/actions/workflows/build.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Kubernetes](https://img.shields.io/badge/Kubernetes-k3s%201.36-326CE5?logo=kubernetes&logoColor=white)
+![GitOps](https://img.shields.io/badge/GitOps-Argo%20CD-EF7B4D?logo=argo&logoColor=white)
+![CPU only](https://img.shields.io/badge/GPU-not%20required-brightgreen)
+![Cost](https://img.shields.io/badge/cloud%20cost-%240-brightgreen)
+
+**A private, self-hosted AI platform that runs on one laptop: no cloud, no GPU, no API keys.** Chat with local LLMs, ask an **AI agent** about your own documents and scans (**retrieval-augmented generation** with citations), automate e-mail triage and a daily briefing, and train, serve and monitor ML models. Everything runs on **Kubernetes (k3s)** with **GitOps** delivery, **single sign-on** and end-to-end **observability**, on CPU-only open-source models.
+
+![The agent answering from the user's own meeting notes, with the retrieved passage and its source](docs/screenshots/agent.png)
+
+## Highlights
+
+- **Agentic RAG.** A LangGraph agent answers from your files, scanned PDFs and images (OCR), with sources cited by file, line or page. It also remembers facts across conversations and reads your calendar.
+- **Model Context Protocol (MCP) tools.** Six MCP servers: filesystem, document search, spam classifier, memory, calendar and web research. A new tool is a config change, not a code change.
+- **LLM gateway and model routing.** LiteLLM in front of Ollama: pick a model per use case (chat, agent, e-mail) in a web UI that shows expected RAM, speed and whether it fits the machine.
+- **Evaluation and governance.** A 26-question golden set scores every model change by rule (repeatable, no LLM judge). There's a quality gate on the Models page, an audit trail of who changed what, and one-click rollback.
+- **MLOps.** A classical ML model trained nightly with Dagster and Optuna, tracked and promoted in the MLflow registry (champion/challenger), served by BentoML, checked for data drift with Evidently, and exposed to the agent as a tool.
+- **LLMOps and observability.** OpenTelemetry traces of every agent step and LLM call in Arize Phoenix; Prometheus metrics and a Grafana dashboard.
+- **Security.** Authelia single sign-on (forward auth + OpenID Connect) over HTTPS with a local CA, network policies, and secrets kept out of Git.
+- **GitOps CI/CD.** GitHub Actions tests and builds the images, pins them by digest in the manifests, and Argo CD deploys the commit. `make e2e` checks every feature end to end.
+- **Runs on a laptop.** 3B models on the CPU, optional services switched on per profile, ~13.7 GB RAM for the core.
+
+## Quick start
+
+On Windows 11 with WSL2 (full steps in [6. Installation](#6-installation)):
+
+```powershell
+git clone https://github.com/nixvarghese01/local-ai-platform E:\Github\local-ai-platform
+cd E:\Github\local-ai-platform
+.\infra\scripts\host\00-assess.ps1          # readiness report: what's missing and the next step
+# once: WSL + k3s + Ollama + models (6.1–6.4), then `make deploy` inside Ubuntu (6.5)
+.\infra\scripts\host\windows-hosts.ps1      # *.ai.local names (admin)
+.\infra\scripts\host\windows-trust-ca.ps1   # trust the local HTTPS certificate
+.\infra\scripts\platform.ps1 set-login      # your single sign-on user
+.\local-up -Profile mlops,observability,automation,research
+```
+
+Then open https://chat.ai.local (chat), https://agent.ai.local (agent and **Models** page) and the other UIs in [10. Endpoints](#10-endpoints).
+
+## At a glance
 
 | | |
 |---|---|
-| **Core stack** | Ollama (3B models) · LiteLLM · LangGraph · MCP · Qdrant · MLflow · Dagster · BentoML · n8n · Phoenix · Prometheus/Grafana · ArgoCD |
+| **Core stack** | Ollama · LiteLLM · LangGraph · MCP · Qdrant · LlamaIndex · MLflow · Dagster · BentoML · Evidently · n8n · Phoenix · Prometheus/Grafana · Authelia · Argo CD |
+| **Use cases** | 10 end-to-end workflows: chat with memory, file search, document Q&A, e-mail triage, calendar, web research, multi-step requests, voice, OCR, daily briefing ([9](#9-use-cases-10-end-to-end-workflows)) |
 | **Hardware** | Windows 11 laptop, 8+ CPU threads, 32 GB RAM, ~100 GB free SSD (reference build: Intel Core i7-9850H, 6 cores / 12 threads) |
 | **Cost** | $0 (all open source + GitHub free tier) |
 | **GPU** | Not required: everything runs on the CPU (small laptop GPUs with 2–4 GB VRAM don't help 3B models) |
-| **Timeline** | 8 weeks, part-time |
+| **Timeline** | 8-week build, then platform hardening ([13. Roadmap](#13-roadmap-8-week-build-plan-and-hardening)) |
 | **License** | [MIT](LICENSE) |
 
 ---
@@ -23,14 +65,14 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 6. [Installation](#6-installation)
 7. [CI/CD and GitOps](#7-cicd-and-gitops)
 8. [Resource Budget](#8-resource-budget)
-9. [Workflows (Functional Requirements)](#9-workflows-functional-requirements)
+9. [Use Cases: 10 End-to-End Workflows](#9-use-cases-10-end-to-end-workflows)
 10. [Endpoints](#10-endpoints)
-11. [Non-Functional Requirements](#11-non-functional-requirements)
+11. [Quality Attributes (Non-Functional Requirements)](#11-quality-attributes-non-functional-requirements)
 12. [Thermal Management](#12-thermal-management)
-13. [8-Week Build Plan](#13-8-week-build-plan)
-14. [Key Decisions](#14-key-decisions)
-15. [Open Issues and Risks](#15-open-issues-and-risks)
-16. [Deliverables](#16-deliverables)
+13. [Roadmap: 8-Week Build Plan and Hardening](#13-roadmap-8-week-build-plan-and-hardening)
+14. [Architecture Decisions](#14-architecture-decisions)
+15. [Known Limitations and Risks](#15-known-limitations-and-risks)
+16. [Deliverables and Status](#16-deliverables-and-status)
 
 ---
 
@@ -77,14 +119,16 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 
 ### MCP Servers
 
-| Server | Capability |
-|---|---|
-| `filesystem` | Read/search/list local files |
-| `web-search` | Search the web |
-| `fetch` | Fetch and extract web page content |
-| `memory` | Long-term conversational memory |
-| `sqlite` | Query structured data |
-| `time` | Current time, timezone and date calculations |
+Each tool is its own small server speaking MCP over streamable HTTP; the agent loads every server listed in `MCP_SERVERS`, so adding a tool is a config change.
+
+| Server | Tools | Capability |
+|---|---|---|
+| `filesystem` | `list_dir`, `search_files`, `read_file` | Read-only access to the shared folder ([6.10](#610-file-agent-langgraph--filesystem-mcp)) |
+| `rag` | `search_documents` | Semantic search over the indexed documents, PDFs, scans and Word files, with sources ([6.12](#612-document-qa-rag-llamaindex--qdrant)) |
+| `triage` | `classify_message` | Spam/phishing check by the MLflow-registered model served by BentoML ([6.15](#615-model-serving-as-an-agent-tool-bentoml--evidently)) |
+| `memory` | `remember`, `recall`, `forget` | Long-term memory across conversations ([6.19](#619-memory-calendar-web-research-and-planning-agent)) |
+| `calendar` | `now`, `list_events`, `add_event` | Date and time; calendars from `.ics` files and read-only feeds ([6.19](#619-memory-calendar-web-research-and-planning-agent)) |
+| `web` | `web_search`, `fetch_page`, `research` | Web research through self-hosted SearXNG, public sites only ([6.19](#619-memory-calendar-web-research-and-planning-agent)) |
 
 ---
 
@@ -101,8 +145,10 @@ Windows 11 (32 GB) ── browser ──► https://*.ai.local (hosts file → 1
                      ├── llm:           LiteLLM gateway (:4000) + Service "ollama" → Ollama on the host
                      ├── storage:       Qdrant, SeaweedFS (S3), Postgres
                      ├── mlops:         MLflow, Dagster, BentoML
-                     ├── agent:         LangGraph + MCP servers
-                     ├── ui:            Open WebUI + Streamlit
+                     ├── agent:         LangGraph agent + 6 MCP servers, SearXNG
+                     ├── ui:            Open WebUI, agent UI + Models page (Streamlit), Headlamp
+                     ├── auth:          Authelia (single sign-on, OpenID Connect)
+                     ├── voice:         speech-to-text + text-to-speech
                      ├── automation:    n8n
                      ├── observability: Phoenix, Prometheus, Grafana
                      └── argocd
@@ -111,14 +157,14 @@ Windows 11 (32 GB) ── browser ──► https://*.ai.local (hosts file → 1
 ### Request flow (agent)
 
 ```text
-User ──► Open WebUI / Streamlit ──► Traefik ──► LangGraph agent
+User ──► Traefik (SSO) ──► chat / agent UIs ──► LangGraph agent
                                                    │
                      ┌─────────────────────────────┼──────────────────────────┐
                      ▼                             ▼                          ▼
              LiteLLM (gateway)             MCP servers (tools)        BentoML (ML model)
                      │                             │
                      ▼                             ▼
-          Ollama (LLM + embeddings)     filesystem / web / memory / sqlite / time
+          Ollama (LLM + embeddings)     filesystem / rag / triage / memory / calendar / web
           Qdrant (RAG retrieval)
 
 Agent runs + all LLM calls (via LiteLLM) ──► Phoenix (traces)     Traefik, containers, BentoML ──► Prometheus ──► Grafana
@@ -347,7 +393,7 @@ Environment="OLLAMA_NUM_PARALLEL=1"       # one request at a time (heat, RAM)
 CPUQuota=400%                             # at most 4 cores' worth of CPU
 ```
 
-Ollama runs on the **WSL host**, not inside k3s (see [Key Decisions](#14-key-decisions)). Apps don't call it directly: they go through the LiteLLM gateway ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). LiteLLM reaches it as `http://ollama.llm.svc.cluster.local:11434`: [`llm/ollama-host.yaml`](infra/k3s/llm/ollama-host.yaml) is a Service pointed at `10.42.0.1`, the host's fixed address on k3s's pod network. With WSL's default NAT networking the host is reachable only from this PC, not the LAN.
+Ollama runs on the **WSL host**, not inside k3s (see [Key Decisions](#14-architecture-decisions)). Apps don't call it directly: they go through the LiteLLM gateway ([6.9](#69-llm-gateway-litellm-switching-and-adding-models)). LiteLLM reaches it as `http://ollama.llm.svc.cluster.local:11434`: [`llm/ollama-host.yaml`](infra/k3s/llm/ollama-host.yaml) is a Service pointed at `10.42.0.1`, the host's fixed address on k3s's pod network. With WSL's default NAT networking the host is reachable only from this PC, not the LAN.
 
 ### 6.4 Install Docker Engine
 
@@ -494,7 +540,7 @@ curl -s https://llm.ai.local/v1/chat/completions -H 'Content-Type: application/j
 
 **Other backends** are also just entries in the same file. The file has commented examples for each:
 - **GPU Ollama on Windows** (`chat-gpu`). An integrated GPU such as Intel Arc can't be used from Ollama inside WSL, but Ollama running natively on Windows can try. Use its experimental Vulkan backend (`OLLAMA_VULKAN=1`) or Intel's IPEX-LLM build of Ollama. Set `OLLAMA_HOST=0.0.0.0` on Windows and allow port 11434 from WSL in Windows Firewall. Point `api_base` at the Windows host's IP as seen from WSL, which changes when WSL restarts. The GPU shares system RAM, so it doesn't add memory. Compare `chat-default` and `chat-gpu` speeds in Open WebUI before relying on it.
-- **Hosted models** (`chat-cloud`). Put the API key in a `litellm-keys` Secret, not in Git. This is off by default: enabling it sends prompts off the machine (see [Non-Functional Requirements](#11-non-functional-requirements)).
+- **Hosted models** (`chat-cloud`). Put the API key in a `litellm-keys` Secret, not in Git. This is off by default: enabling it sends prompts off the machine (see [Non-Functional Requirements](#11-quality-attributes-non-functional-requirements)).
 - **vLLM** isn't used. It needs a supported GPU, which this laptop doesn't have; on CPU it's slower than Ollama and serves one model per process. If a GPU box becomes available, its OpenAI endpoint is one more entry (`model: hosted_vllm/<model>`, `api_base: http://<host>:8000/v1`).
 
 Every LLM call through LiteLLM is traced to Phoenix (`callbacks: ["arize_phoenix"]` under `litellm_settings`, §6.16).
@@ -832,7 +878,7 @@ Fits in the 18 GB WSL allocation, leaving ~14 GB for Windows. Every workload mus
 
 ---
 
-## 9. Workflows (Functional Requirements)
+## 9. Use Cases: 10 End-to-End Workflows
 
 | # | Workflow | Target | Status (measured on CPU, 2026-10) | Main components |
 |---|---|---|---|---|
@@ -853,7 +899,7 @@ Latencies are targets for CPU-only 3B models; Phoenix records the real ones per 
 
 ## 10. Endpoints
 
-Every URL below opens from Windows once the platform is up (`.\local-up`) and the hosts entries exist ([6.7](#67-local-dns-for-local-hostnames)). In PowerShell use `curl.exe`, not `curl` (an alias for `Invoke-WebRequest`).
+Every URL below opens from Windows once the platform is up (`.\local-up`) and the hosts entries exist ([6.7](#67-local-dns-for-ailocal-hostnames)). In PowerShell use `curl.exe`, not `curl` (an alias for `Invoke-WebRequest`).
 
 ### 10.1 Open them one by one
 
@@ -932,25 +978,25 @@ WSL forwards `localhost` ports to Windows, so the browser on Windows reaches the
 
 ### 10.4 Screenshots
 
-Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scripts\screenshots.ps1` with the platform up; re-run it after UI changes). It drives headless Chrome, asks the agent one document question, and leaves login pages at their sign-in screen.
+Captured with [`screenshots.ps1`](infra/scripts/screenshots.ps1) (`.\infra\scripts\screenshots.ps1` with the platform up and all profiles on; re-run it after UI changes). It drives headless Chrome, signs in once through single sign-on, asks the agent a document question, and opens every UI with its data.
 
-| Agent UI (https://agent.ai.local): document question, retrieved passage and sources, 6.6 s on CPU | LiteLLM API docs (https://llm.ai.local) |
+| Agent UI (https://agent.ai.local): document question, retrieved passage and sources | Models page: a model per use case, laptop RAM/CPU, fit check, quality and history |
 |---|---|
-| ![Agent UI](docs/screenshots/agent.png) | ![LiteLLM](docs/screenshots/litellm.png) |
-| **Qdrant dashboard: collection `docs`, 65 chunks, 768-dim cosine** | **Open WebUI sign-in (https://chat.ai.local)** |
-| ![Qdrant](docs/screenshots/qdrant.png) | ![Open WebUI](docs/screenshots/chat.png) |
-| **Headlamp token login (https://headlamp.ai.local)** | **MLflow registry: `message-triage` v1, alias `champion`, test F1 0.9759** |
-| ![Headlamp](docs/screenshots/headlamp.png) | ![MLflow](docs/screenshots/mlflow.png) |
-| **Dagster: `triage_model` materialized, check passed, nightly 02:00 GMT+4** | **SeaweedFS admin sign-in (https://s3.ai.local)** |
-| ![Dagster](docs/screenshots/dagster.png) | ![SeaweedFS](docs/screenshots/s3.png) |
-| **Single sign-on: https://auth.ai.local, trusted certificate (6.14)** | **BentoML message classifier (6.15)** |
-| ![Authelia sign-in](docs/screenshots/auth.png) | ![BentoML](docs/screenshots/triage.png) |
-| **Grafana: Platform overview (memory, CPU, requests per UI)** | **Phoenix: traces for `agent` and `litellm`** |
-| ![Grafana](docs/screenshots/grafana.png) | ![Phoenix](docs/screenshots/phoenix.png) |
-| **n8n: owner account setup (second layer behind sign-on)** | **GitHub Actions: ci and build green** |
-| ![n8n](docs/screenshots/n8n.png) | ![GitHub Actions](docs/screenshots/actions.png) |
-| **ArgoCD sign-in (second layer behind sign-on)** | |
-| ![ArgoCD](docs/screenshots/argocd.png) | |
+| ![Agent UI answering from the user's meeting notes with sources](docs/screenshots/agent.png) | ![Models page with model per use case, fit check, evaluation scores and audit history](docs/screenshots/models.png) |
+| **Open WebUI chat (https://chat.ai.local), signed in through single sign-on** | **Single sign-on: https://auth.ai.local, trusted certificate (6.14)** |
+| ![Open WebUI chat with local models](docs/screenshots/chat.png) | ![Authelia single sign-on](docs/screenshots/auth.png) |
+| **Phoenix: OpenTelemetry traces of agent runs** | **Grafana: Platform overview (memory, CPU, requests per UI)** |
+| ![Phoenix traces of the LangGraph agent](docs/screenshots/phoenix.png) | ![Grafana platform dashboard](docs/screenshots/grafana.png) |
+| **MLflow registry: `message-triage` with alias `champion`** | **Dagster: `triage_model` asset, check passed, nightly schedule** |
+| ![MLflow model registry](docs/screenshots/mlflow.png) | ![Dagster asset lineage](docs/screenshots/dagster.png) |
+| **Qdrant dashboard: collection `docs`** | **BentoML message classifier (6.15)** |
+| ![Qdrant vector database](docs/screenshots/qdrant.png) | ![BentoML model serving](docs/screenshots/triage.png) |
+| **n8n: e-mail triage and daily briefing workflows** | **Headlamp: cluster workloads, no token prompt** |
+| ![n8n workflows](docs/screenshots/n8n.png) | ![Headlamp Kubernetes dashboard](docs/screenshots/headlamp.png) |
+| **Argo CD: the `platform` app, Synced and Healthy (OIDC sign-in)** | **SeaweedFS admin (S3 object storage)** |
+| ![Argo CD GitOps](docs/screenshots/argocd.png) | ![SeaweedFS S3 storage](docs/screenshots/s3.png) |
+| **LiteLLM API docs (https://llm.ai.local)** | **GitHub Actions: ci and build green** |
+| ![LiteLLM gateway](docs/screenshots/litellm.png) | ![GitHub Actions CI/CD](docs/screenshots/actions.png) |
 
 ### 10.5 Planned (not deployed yet)
 
@@ -961,7 +1007,7 @@ Their hosts entries already exist; until the service is deployed the URL returns
 
 ---
 
-## 11. Non-Functional Requirements
+## 11. Quality Attributes (Non-Functional Requirements)
 
 - **Privacy:** all inference and data stay on the laptop; no external LLM APIs. LiteLLM can route to hosted models, but none is configured by default.
 - **Cost:** $0 — only open-source software and GitHub free tier.
@@ -994,7 +1040,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 **Measured (2026-10-08, i7-9850H, all profiles on)** with [`windows-temps.ps1`](infra/scripts/host/windows-temps.ps1) (LibreHardwareMonitor, open source; `-Load` runs this comparison): idle 59 °C package (max 61), Ollama generating 67 °C average, **70 °C max** at ~26% CPU (the Ollama thread cap), 30 °C below the 100 °C limit. Run `.\infra\scripts\host\windows-temps.ps1` any time for current CPU, GPU and SSD temperatures.
 ---
 
-## 13. 8-Week Build Plan
+## 13. Roadmap: 8-Week Build Plan and Hardening
 
 | Week | Focus | Deliverable |
 |---|---|---|
@@ -1007,6 +1053,20 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | 7 | ArgoCD + GitHub Actions | GitOps CI/CD ✅ |
 | 8 | Voice + OCR + docs + demo | Full platform ✅ (demo script: [docs/DEMO.md](docs/DEMO.md)) |
 
+**After the build: platform hardening** (tracked on the [project board](https://github.com/users/nixvarghese01/projects/2)):
+
+| Issue | Focus | Result |
+|---|---|---|
+| #24, #25 | Headlamp, single sign-on, HTTPS, on-demand profiles | Cluster UI, one login for every UI, services started per profile ✅ |
+| #3 | Thermal monitoring | CPU temperatures idle vs under LLM load ✅ |
+| #27 | Memory, calendar, web research, multi-step requests | All 10 use cases working ✅ |
+| #28 | Single sign-on without a second login (OIDC for Argo CD, header auth, network policies) | No app asks for its own password ✅ |
+| — | Models page: model per use case, RAM/CPU fit check, expected speed | Plug-and-play model switching ✅ |
+| #29 | Golden evaluation set and quality gate | 26 questions, 100% on `qwen2.5:3b`; caught and removed a harmful planning step ✅ |
+| #30 | Audit trail and rollback for model changes | Who changed what, one-click revert ✅ |
+| #31 | Dynamic training data for the spam classifier (phishing) | Backlog |
+| #32 | Model supply chain: digest pinning, allowlist, licences | Backlog |
+
 ### Definition of done per week
 - Manifests committed under `infra/k3s/`
 - Service reachable at its `*.ai.local` URL
@@ -1015,7 +1075,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 
 ---
 
-## 14. Key Decisions
+## 14. Architecture Decisions
 
 - ✅ Monorepo (not split repos)
 - ✅ k3s in WSL2 (not Docker Desktop)
@@ -1027,12 +1087,18 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 - ✅ Ollama on the WSL host, not in k3s (simpler, one copy of the models)
 - ✅ LiteLLM gateway in front of all models: apps use aliases, so switching or adding a model is a config change
 - ✅ No vLLM (needs a supported GPU; on CPU it's slower than Ollama)
-- ✅ 8-week build plan
+- ✅ Phoenix for LLM tracing, not Langfuse v3 (~0.5 GB vs ~1.5–2 GB; [6.16](#616-observability-phoenix-prometheus-grafana))
+- ✅ Authelia for single sign-on: forward auth for every UI, OpenID Connect for Argo CD ([6.14](#614-single-sign-on-and-https-authelia))
+- ✅ SeaweedFS for S3 storage, not MinIO (MinIO went source-only in late 2025)
+- ✅ One model per use case, chosen at run time (ConfigMap, not Git), so a switch needs no commit; every switch is audited
+- ✅ Rules before the model for fixed steps (retrieval, memory, web research, splitting multi-step requests): a 3B model skips or invents tool calls when it has to decide them
+- ✅ Evaluation by rule-checked golden set, not an LLM judge: repeatable on a 3B model
+- ✅ 8-week build plan, then hardening by issue (13)
 - ✅ Fully self-hosted, private, free
 
 ---
 
-## 15. Open Issues and Risks
+## 15. Known Limitations and Risks
 
 | Item | Notes |
 |---|---|
@@ -1052,7 +1118,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Nightly training | Runs only if the platform is up at 02:00; missed nights aren't replayed. Same data + fixed seed give the same score, so the champion only changes when the data or the search space does. |
 | Single sign-on | **Resolved:** every UI is behind Authelia over HTTPS ([6.14](#614-single-sign-on-and-https-authelia)). One factor (password) for now; switch the rule to `two_factor` before exposing anything beyond this PC. The local CA's private key (`/var/lib/local-ai-ca`, root-only in WSL) can sign certificates your browser trusts: keep it there, and remove the CA with `windows-trust-ca.ps1 -Remove` if you retire the platform. |
 | RAG routing | The agent skips retrieval for "which/what files..." and "list ... notes/files" questions (a regex in [`graph.py`](agent/graph.py)). Questions phrased otherwise go through retrieval, and the model can still answer them from passages instead of listing the folder. Unknown facts get a clumsy "I don't have access" rather than "I don't know". |
-| WSL networking | **Resolved:** Traefik listens on the WSL host's ports; hosts entries point at `127.0.0.1`, which Windows port proxies forward to the `[::1]` WSL relay ([6.7](#67-local-dns-for-local-hostnames)), so neither a changing WSL IP nor a network without IPv6 matters. Needs WSL's default NAT mode with `localhostForwarding=true` and the IP Helper service. |
+| WSL networking | **Resolved:** Traefik listens on the WSL host's ports; hosts entries point at `127.0.0.1`, which Windows port proxies forward to the `[::1]` WSL relay ([6.7](#67-local-dns-for-ailocal-hostnames)), so neither a changing WSL IP nor a network without IPv6 matters. Needs WSL's default NAT mode with `localhostForwarding=true` and the IP Helper service. |
 | Disk space | Keep the distro (and so models, images, volumes) on a drive with ~100 GB free; the assessment checks this. On the reference machine it lives on a second SSD. |
 | Windows memory pressure | Mitigated with `memory=18GB`, but steady-state headroom inside WSL is only ~4.3 GB. Watch it as services are added. |
 | LiteLLM image | **Pinned** to `v1.103.1` (tag + digest) in [`llm/litellm.yaml`](infra/k3s/llm/litellm.yaml). Upgrade deliberately: change the tag, apply, run `make status`. No master key: fine while the API is reachable only from this PC, but add one (a Secret) before exposing it. |
@@ -1061,18 +1127,21 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 
 ---
 
-## 16. Deliverables
+## 16. Deliverables and Status
 
-- Local AI agent platform running on k3s
-- End-to-end workflows: 6 working (2, 3, 4, 8, 9, 10), 2 partly (1, 7), 2 not built (5, 6); see §9
-- MCP-based tool system
-- RAG + classical ML
-- Full MLOps (MLflow, Dagster, BentoML, Optuna, Evidently)
-- LLMOps / AIOps (Phoenix, Prometheus, Grafana, n8n)
-- k3s + ArgoCD GitOps
-- GitHub Actions CI/CD to GHCR
-- Portfolio-ready repo with docs ([weekly notes](docs/notes/README.md)) and a demo script ([docs/DEMO.md](docs/DEMO.md))
-- Hands-on skills: agents, MCP, Kubernetes, LLMOps
+| Deliverable | Status |
+|---|---|
+| Local AI agent platform on Kubernetes (k3s) | ✅ running; `make e2e` checks every feature end to end |
+| End-to-end use cases | ✅ all 10 working ([9](#9-use-cases-10-end-to-end-workflows)) |
+| MCP-based tool system | ✅ 6 MCP servers, 14 tools |
+| RAG (with OCR) + classical ML | ✅ cited answers from notes, PDFs, scans; spam classifier as an agent tool |
+| MLOps | ✅ MLflow, Dagster, Optuna, BentoML, Evidently: nightly training, champion/challenger, drift report |
+| LLMOps / observability | ✅ Phoenix (OpenTelemetry traces), Prometheus, Grafana, n8n automation |
+| Model management | ✅ model per use case, fit check, golden-set evaluation, audit trail, rollback |
+| Security | ✅ single sign-on (Authelia, OIDC), HTTPS with a local CA, network policies, secrets out of Git |
+| GitOps CI/CD | ✅ GitHub Actions → GHCR (digest-pinned) → Argo CD |
+| Documentation | ✅ this README, [weekly notes](docs/notes/README.md), a [demo script](docs/DEMO.md) |
+| Hands-on skills shown | AI agents, MCP, RAG, Kubernetes, GitOps, MLOps, LLMOps, LLM evaluation, platform security |
 
 ---
 

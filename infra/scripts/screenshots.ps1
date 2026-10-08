@@ -6,7 +6,8 @@
 # document question and opens the retrieved passages (5-20 s on CPU).
 # Every UI is behind single sign-on (README section 6.14): the script captures the sign-in page, then
 # signs in once with your platform login (asked for, or $env:LOCAL_AI_USER / LOCAL_AI_PASSWORD).
-# Apps with a login of their own (Open WebUI, Headlamp, SeaweedFS) stay at their sign-in screen.
+# Every app then opens signed in, with its data; Argo CD's "Log in via Authelia" is clicked.
+# A full run (no -Only) into docs/screenshots replaces every image there.
 #   -Out <folder>  write somewhere else, e.g. to check every UI without touching the repo's images
 #   -Edge          use Microsoft Edge instead of Chrome
 param([string[]]$Only, [string]$Out, [switch]$Edge)
@@ -18,6 +19,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 $out = if ($Out) { $Out } else { "$repo\docs\screenshots" }
 New-Item -ItemType Directory -Force $out | Out-Null
+if (-not $Only) { Get-ChildItem $out -Filter *.png | Remove-Item }  # a full run starts from a clean folder
 
 $chrome = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
 $msedge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
@@ -26,23 +28,32 @@ if (-not $browser) { throw 'Chrome or Edge not found' }
 "browser: $browser"
 
 $question = 'What was decided in the meeting on 2026-10-01?'
-# name = url, JavaScript that is true once the page has rendered, seconds to wait for it
+# name = url, JavaScript that is true once the page has rendered, seconds to wait for it,
+#        then optionally: JavaScript to run (a click), what is true after it, and the page height
+$text = 'document.body.innerText'
 $pages = [ordered]@{
     auth     = @('https://auth.ai.local/', "!!document.querySelector('#password-textfield')", 30)  # first: signs in
+    chat     = @('https://chat.ai.local/', "!!document.querySelector('#chat-input, textarea') && $text.includes('chat-default')", 90)
+    agent    = @('https://agent.ai.local/', "!!document.querySelector('[data-testid=stChatInput] textarea') && $text.includes('Tools:')", 60)
+    models   = @('https://agent.ai.local/models', "$text.includes('Model for each use case') && $text.includes('History')", 90, $null, $null, 1700)
     litellm  = @('https://llm.ai.local/', "!!document.querySelector('.swagger-ui .info')", 30)
-    qdrant   = @('https://qdrant.ai.local/dashboard', "document.body.innerText.includes('Collections')", 30)
-    chat     = @('https://chat.ai.local/', "document.body.innerText.includes('Sign in')", 60)
-    agent    = @('https://agent.ai.local/', "!!document.querySelector('[data-testid=stChatInput] textarea') && document.body.innerText.includes('Tools:')", 60)
-    headlamp = @('https://headlamp.ai.local/', "document.body.innerText.includes('Authentication')", 30)
-    mlflow   = @('https://mlflow.ai.local/#/models/message-triage', "document.body.innerText.includes('champion')", 60)
-    dagster  = @('https://dagster.ai.local/assets/triage_model', "document.body.innerText.includes('test_f1')", 60)
-    s3       = @('https://s3.ai.local/', "!!document.querySelector('input[type=password]')", 30)
-    triage   = @('https://triage.ai.local/', "document.body.innerText.includes('classify')", 60)
-    phoenix  = @('https://phoenix.ai.local/projects', "document.body.innerText.includes('agent') && document.body.innerText.includes('litellm')", 60)
-    grafana  = @('https://grafana.ai.local/d/platform-overview?orgId=1&kiosk', "document.body.innerText.includes('Memory by namespace') && !document.body.innerText.includes('Loading')", 60)
-    n8n      = @('https://n8n.ai.local/', "/owner|sign in|workflows/i.test(document.body.innerText)", 60)
-    argocd   = @('https://argocd.ai.local/', "/username|applications/i.test(document.body.innerText)", 60)
-    actions  = @('https://github.com/nixvarghese01/local-ai-platform/actions', "document.body.innerText.includes('build')", 60)
+    qdrant   = @('https://qdrant.ai.local/dashboard', "$text.includes('Collections') && $text.includes('docs')", 30)
+    headlamp = @('https://headlamp.ai.local/c/local-ai/workloads', "$text.includes('Workloads') && document.querySelectorAll('table tbody tr').length > 3", 60)
+    mlflow   = @('https://mlflow.ai.local/#/models/message-triage', "$text.includes('champion')", 60)
+    dagster  = @('https://dagster.ai.local/assets/triage_model', "$text.includes('test_f1')", 60)
+    s3       = @('https://s3.ai.local/', "/dashboard|buckets/i.test($text) && !document.querySelector('input[type=password]')", 30)
+    triage   = @('https://triage.ai.local/', "$text.includes('classify')", 60)
+    # Phoenix: open the agent project's trace list (its id comes from Phoenix's own API)
+    phoenix  = @('https://phoenix.ai.local/projects', "$text.includes('agent') && $text.includes('litellm')", 60,
+        "fetch('/v1/projects').then(r => r.json()).then(d => location.assign('/projects/' + d.data.find(p => p.name === 'agent').id))",
+        "location.pathname.split('/').length > 2 && document.querySelectorAll('table tbody tr').length > 2")
+    grafana  = @('https://grafana.ai.local/d/platform-overview?orgId=1&kiosk', "$text.includes('Memory by namespace') && !$text.includes('Loading')", 60)
+    n8n      = @('https://n8n.ai.local/home/workflows', "$text.includes('Email triage') && $text.includes('Daily briefing')", 60)
+    # Argo CD: "Log in via Authelia" goes straight through with the platform session
+    argocd   = @('https://argocd.ai.local/applications/argocd/platform', "/log in via authelia/i.test($text) || $text.includes('Synced')", 60,
+        "[...document.querySelectorAll('button, a')].find(b => /log in via authelia/i.test(b.innerText))?.click()",
+        "$text.includes('Synced') && $text.includes('Healthy')")
+    actions  = @('https://github.com/nixvarghese01/local-ai-platform/actions', "$text.includes('build')", 60)
 }
 
 # --- minimal DevTools protocol client (System.Net.WebSockets, works in Windows PowerShell 5.1)
@@ -94,9 +105,15 @@ try {
 
     foreach ($name in $pages.Keys) {
         if ($Only -and $name -notin $Only -and $name -ne 'auth') { continue }  # sign-in always runs
-        $url, $ready, $wait = $pages[$name]
+        $url, $ready, $wait, $action, $after, $height = $pages[$name]
+        Send-Cdp 'Emulation.setDeviceMetricsOverride' @{ width = 1400; height = $(if ($height) { $height } else { 900 }); deviceScaleFactor = 1; mobile = $false } | Out-Null
         Send-Cdp 'Page.navigate' @{ url = $url } | Out-Null
-        if (-not (Wait-Js $ready $wait)) {
+        $ok = Wait-Js $ready $wait
+        if ($ok -and $action -and -not (Test-Js $after)) {  # a click or a jump to the page with the data
+            Send-Cdp 'Runtime.evaluate' @{ expression = $action } | Out-Null
+            $ok = Wait-Js $after $wait
+        }
+        if (-not $ok) {
             $seen = (Send-Cdp 'Runtime.evaluate' @{ expression = "location.href + ' | ' + document.title + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')"; returnByValue = $true }).result.value
             Write-Warning "$name did not render in $wait s: $url`n  the page shows: $seen"
             continue
