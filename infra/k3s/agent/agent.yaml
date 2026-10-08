@@ -116,7 +116,7 @@ spec:
         fsGroup: 1000 # the image's user writes the conversations volume
       containers:
         - name: agent
-          image: ghcr.io/nixvarghese01/local-ai-agent:sha-d3bf9c8c76f404d5455c8f3b1053746c8455b7a2@sha256:320eaaca7baba16cc2c217257e41cca7e9854ed3f3dbcd2cbb5277c504e48eb7
+          image: ghcr.io/nixvarghese01/local-ai-agent:sha-121bcada4627e5e3eb695014b7296d3b382299e4@sha256:eb92c82fa14e72b6d2d300c6e242a895bb024d9e06f22090886a089c21f3d4fa
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
