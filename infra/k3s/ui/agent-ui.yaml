@@ -61,7 +61,7 @@ spec:
       serviceAccountName: agent-ui
       containers:
         - name: agent-ui
-          image: ghcr.io/nixvarghese01/local-ai-agent-ui:sha-71bf7d72b456432e7a94801ff4fefa2e5d5992fe@sha256:cb386f2482058506333e2af2dac430fe86cf5babc38e15be09d665c046fb1dae
+          image: ghcr.io/nixvarghese01/local-ai-agent-ui:sha-167c41f149d7dfc23082c2bd013c11f5be7acd77@sha256:5518a931e3a3c2773db40bc0e0d94eb0da578d5af226fc0d9795bab1debd2889
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
