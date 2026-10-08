@@ -3,8 +3,7 @@
 #   main        <- development (release), hotfix/*; also needs a new, untagged CHANGELOG version
 #   development <- feature/*, bugfix/*, hotfix/*, docs/*, chore/*, refactor/*, test/*, ci/*,
 #                  dependabot/*, main (back-merge after a hotfix)
-# build.yml re-runs it by workflow_dispatch after pinning images on a hotfix branch (a push with
-# the workflow token doesn't start pull_request workflows); it then looks up the open PR itself.
+# Can also be run by hand (workflow_dispatch) on a branch; it then looks up the open PR itself.
 name: branch-policy
 
 on:

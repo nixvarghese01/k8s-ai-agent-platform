@@ -26,7 +26,6 @@ on:
 permissions:
   contents: write # the bump commit
   packages: write
-  actions: write # re-run the PR checks after a bump on a hotfix branch
 
 concurrency:
   group: build-${{ github.ref }}
@@ -124,6 +123,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
+        with:
+          # a write deploy key, the one actor the development ruleset lets push directly; unlike
+          # the workflow token, its pushes start workflows, so a hotfix PR re-runs its checks
+          ssh-key: ${{ secrets.DEPLOY_KEY }}
       - uses: actions/download-artifact@v8
         with:
           pattern: digest-*
@@ -139,12 +142,3 @@ jobs:
           git commit -am "Deploy images built from ${GITHUB_SHA::7}"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
-      - name: Re-run the pull request checks (hotfix branches)
-        # a push with the workflow token doesn't start pull_request workflows, so the bump commit
-        # would have no checks and the hotfix PR into main couldn't merge
-        if: startsWith(github.ref_name, 'hotfix/')
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh workflow run ci.yml --ref "${GITHUB_REF_NAME}"
-          gh workflow run branch-policy.yml --ref "${GITHUB_REF_NAME}"

@@ -31,8 +31,9 @@ Examples: `feature/42-calendar-reminders`, `bugfix/31-phishing-recall`, `docs/in
   the code owner ([`CODEOWNERS`](.github/CODEOWNERS)), so only the maintainer merges into `main`.
   CI must pass; releases use a merge commit so `main` keeps the history of `development`.
 - **`development`:** no direct pushes, force pushes or deletion. Pull requests from the prefixes
-  above, CI must pass, squash merge. The build workflow's image-pin commits (`Deploy images built
-  from …`) are the one exception: GitHub Actions may push them directly.
+  above, CI must pass, squash merge (a merge commit for the `main` back-merge). The build
+  workflow's image-pin commits (`Deploy images built from …`) are the one exception: they're
+  pushed with a write deploy key (secret `DEPLOY_KEY`), the ruleset's only direct-push bypass.
 
 Required checks on both: `unit tests (pytest)`, `lint (manifests, shell, PowerShell, workflows)`,
 `branch policy`. Release tags `v*` can't be moved or deleted.
@@ -71,7 +72,7 @@ For an urgent fix to the released version on `main`:
 1. Branch `hotfix/<issue>-<topic>` from `main`; fix, add tests, and add a `PATCH` version section
    (`[X.Y.Z+1] - <date>`) to `CHANGELOG.md`.
 2. Push. If image sources changed, `build` builds them on the hotfix branch and pins the digests
-   there, then re-runs the pull request checks.
+   there; that push re-runs the pull request checks.
 3. Open a pull request into `main`; the maintainer merges it and `release` publishes `vX.Y.Z+1`.
 4. Open a pull request `main` → `development` so the fix isn't lost (keep `development`'s image
    digests if both changed the same manifest; `build` re-pins on the next push anyway).
