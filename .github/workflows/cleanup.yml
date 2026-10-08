@@ -1,5 +1,7 @@
-# Keep GHCR tidy (README §7): delete all but the newest versions of each image every week.
+# Keep GHCR tidy (README §7): every week, delete all but the newest versions of each image.
 # Public packages don't count against GHCR's free storage, but old versions pile up fast.
+# Released images (tags v*, latest) and the development tag are never deleted, so every
+# release can still be deployed or rolled back to.
 name: cleanup
 
 on:
@@ -12,15 +14,17 @@ permissions:
 
 jobs:
   prune:
-    name: ${{ matrix.package }}
+    name: prune old image versions
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package: [ml-base, agent, agent-ui, mcp-filesystem, mcp-rag, mcp-triage, mlflow, pipelines, serving, voice]
+    timeout-minutes: 15
     steps:
-      - uses: actions/delete-package-versions@v5
+      - uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          package-name: local-ai-${{ matrix.package }}
-          package-type: container
-          min-versions-to-keep: 10 # enough to roll back a few deploys
+          packages: >-
+            local-ai-ml-base,local-ai-agent,local-ai-agent-ui,local-ai-mcp-filesystem,
+            local-ai-mcp-rag,local-ai-mcp-triage,local-ai-mcp-memory,local-ai-mcp-calendar,
+            local-ai-mcp-web,local-ai-mlflow,local-ai-pipelines,local-ai-serving,local-ai-voice
+          exclude-tags: "v*,latest,development"
+          keep-n-tagged: 10 # enough to roll back a few deploys
+          delete-untagged: true
+          token: ${{ secrets.GITHUB_TOKEN }}

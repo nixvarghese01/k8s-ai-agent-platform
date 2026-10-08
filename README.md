@@ -824,6 +824,10 @@ git push (development)
                      └─► bump job: new digests pinned in infra/k3s, committed ("Deploy images built from <sha>")
                                      │
 ArgoCD (in k3s, profile gitops) ◄────┘ polls development every ~3 min, syncs infra/k3s
+
+pull request feature/* bugfix/* docs/* … ─► development     (ci + branch-policy required)
+pull request development | hotfix/* ─────► main (maintainer only)
+   └─► release.yml  tag vX.Y.Z from CHANGELOG.md · pinned images tagged vX.Y.Z + latest · GitHub release
 ```
 
 | Piece | File | Notes |
@@ -831,7 +835,10 @@ ArgoCD (in k3s, profile gitops) ◄────┘ polls development every ~3 mi
 | CI | [`ci.yml`](.github/workflows/ci.yml) | Every push and PR. Live checks stay in `make status` (CI can't reach the laptop) |
 | Image builds | [`build.yml`](.github/workflows/build.yml), [`bump-images.py`](.github/bump-images.py) | Reproducible (`SOURCE_DATE_EPOCH=0`, no attestations): an unchanged image keeps its digest, so its pods aren't restarted; only changed digests are committed |
 | Shared ML base | [`images/ml-base/`](images/ml-base/Dockerfile) | pandas, scikit-learn, pyarrow, MLflow (skinny), boto3, used by `mlflow`, `pipelines`, `serving`: their own layers went from 3.5 GB to 2.0 GB (all images 5.1 → 3.6 GB) |
-| GHCR cleanup | [`cleanup.yml`](.github/workflows/cleanup.yml) | Weekly; keeps the newest 10 versions per image |
+| Branch policy | [`branch-policy.yml`](.github/workflows/branch-policy.yml) | Which branch may open a PR into which; into `main` also a new CHANGELOG version. Branching model and protection: [CONTRIBUTING.md](CONTRIBUTING.md#branching-model) |
+| Releases | [`release.yml`](.github/workflows/release.yml) | Every merge into `main`: tag, promote the pinned images (no rebuild), publish the release. Hotfix branches build their own images first |
+| GHCR cleanup | [`cleanup.yml`](.github/workflows/cleanup.yml) | Weekly; keeps the newest 10 versions per image and every released one (`v*`, `latest`, `development`) |
+| Dependencies | [`dependabot.yml`](.github/dependabot.yml) | Weekly grouped PRs into `development` for Actions, pip and base images |
 | ArgoCD | [`infra/argocd/`](infra/argocd/kustomization.yaml) | v3.5.4 without Dex, notifications and ApplicationSet: **204 MB**. Application `platform` = `infra/k3s` on `development` |
 
 **Install ArgoCD** (once, inside Ubuntu): `make argocd`. It applies [`infra/argocd`](infra/argocd/kustomization.yaml), turns on the `gitops` profile and waits. UI: https://argocd.ai.local, *Log in via Authelia* (the platform login, §6.14); user `admin` with `make argocd-password` stays as a fallback. With the `gitops` profile off, nothing deploys from GitHub; `make deploy` still works by hand.

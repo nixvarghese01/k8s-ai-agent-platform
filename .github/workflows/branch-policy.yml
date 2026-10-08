@@ -1,0 +1,75 @@
+# Branch policy (CONTRIBUTING.md "Branching model"): which branch may open a pull request into
+# which. A required check on main and development, so a wrong source branch can't be merged.
+#   main        <- development (release), hotfix/*; also needs a new, untagged CHANGELOG version
+#   development <- feature/*, bugfix/*, hotfix/*, docs/*, chore/*, refactor/*, test/*, ci/*,
+#                  dependabot/*, main (back-merge after a hotfix)
+# Can also be run by hand (workflow_dispatch) on a branch; it then looks up the open PR itself.
+name: branch-policy
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [development, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  policy:
+    name: branch policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Find the pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SOURCE: ${{ github.head_ref || github.ref_name }}
+          TARGET: ${{ github.base_ref }}
+        run: |
+          if [ -z "$TARGET" ]; then
+            TARGET=$(gh pr list --head "$SOURCE" --state open --json baseRefName --jq '.[0].baseRefName // ""')
+          fi
+          echo "source=$SOURCE" >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "$SOURCE -> ${TARGET:-(no open pull request)}"
+
+      - name: Source branch allowed for this target
+        env:
+          SOURCE: ${{ steps.pr.outputs.source }}
+          TARGET: ${{ steps.pr.outputs.target }}
+        run: |
+          case "$TARGET" in
+            main)
+              case "$SOURCE" in
+                development|hotfix/*) ;;
+                *) echo "::error::main takes pull requests only from development (a release) or hotfix/*, not '$SOURCE'"; exit 1 ;;
+              esac ;;
+            development)
+              case "$SOURCE" in
+                feature/*|bugfix/*|hotfix/*|docs/*|chore/*|refactor/*|test/*|ci/*|dependabot/*|main) ;;
+                *) echo "::error::name the branch feature/, bugfix/, hotfix/, docs/, chore/, refactor/, test/ or ci/ (got '$SOURCE')"; exit 1 ;;
+              esac ;;
+          esac
+          echo "ok: $SOURCE -> ${TARGET:-none}"
+
+      - uses: actions/checkout@v7
+        if: steps.pr.outputs.target == 'main'
+        with:
+          ref: ${{ steps.pr.outputs.source }}
+          fetch-depth: 0 # the existing tags
+
+      - name: A new release version in CHANGELOG.md
+        if: steps.pr.outputs.target == 'main'
+        run: |
+          version=$(grep -m1 -oP '^## \[\K[0-9]+\.[0-9]+\.[0-9]+(?=\])' CHANGELOG.md || true)
+          if [ -z "$version" ]; then
+            echo "::error::CHANGELOG.md needs a '## [X.Y.Z] - <date>' section for this release"; exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
+            echo "::error::v$version is already released: add a new version section to CHANGELOG.md (a hotfix bumps PATCH)"; exit 1
+          fi
+          echo "merging releases v$version"
