@@ -158,12 +158,15 @@ spec:
             - name: dashboards
               mountPath: /var/lib/grafana/dashboards
           resources:
+            # Grafana 13 sat at ~350 MiB of a 384 MiB limit and timed out its own requests
+            # (dashboards stuck on "Loading", liveness restarts) while the models kept the CPU
+            # busy: more memory and CPU headroom (2026-10-08)
             requests:
-              cpu: 20m
-              memory: 96Mi
+              cpu: 50m
+              memory: 256Mi
             limits:
-              cpu: "1"
-              memory: 384Mi
+              cpu: "2"
+              memory: 1Gi
           readinessProbe:
             httpGet:
               path: /api/health

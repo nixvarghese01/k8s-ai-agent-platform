@@ -10,16 +10,23 @@
 # A full run (no -Only) into docs/screenshots replaces every image there.
 #   -Out <folder>  write somewhere else, e.g. to check every UI without touching the repo's images
 #   -Edge          use Microsoft Edge instead of Chrome
-param([string[]]$Only, [string]$Out, [switch]$Edge)
-$user = if ($env:LOCAL_AI_USER) { $env:LOCAL_AI_USER } else { Read-Host 'Platform username' }
-$password = if ($env:LOCAL_AI_PASSWORD) { $env:LOCAL_AI_PASSWORD } else {
-    [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host 'Password' -AsSecureString)))
-}
+#
+# Signing in yourself instead (the password never reaches the script):
+#   -Open    opens a visible browser window (its own profile, your normal one is untouched) with
+#            every UI in a tab; sign in once at auth.ai.local in it
+#   -Attach  then captures every UI from that signed-in window, and leaves it open
+param([string[]]$Only, [string]$Out, [switch]$Edge, [switch]$Open, [switch]$Attach)
 $ErrorActionPreference = 'Stop'
+if (-not ($Open -or $Attach)) {
+    $user = if ($env:LOCAL_AI_USER) { $env:LOCAL_AI_USER } else { Read-Host 'Platform username' }
+    $password = if ($env:LOCAL_AI_PASSWORD) { $env:LOCAL_AI_PASSWORD } else {
+        [Runtime.InteropServices.Marshal]::PtrToStringBSTR([Runtime.InteropServices.Marshal]::SecureStringToBSTR((Read-Host 'Password' -AsSecureString)))
+    }
+}
 $repo = Resolve-Path "$PSScriptRoot\..\.."
 $out = if ($Out) { $Out } else { "$repo\docs\screenshots" }
 New-Item -ItemType Directory -Force $out | Out-Null
-if (-not $Only) { Get-ChildItem $out -Filter *.png | Remove-Item }  # a full run starts from a clean folder
+if (-not $Only -and -not $Open) { Get-ChildItem $out -Filter *.png | Remove-Item }  # a full run starts clean
 
 $chrome = "$env:ProgramFiles\Google\Chrome\Application\chrome.exe"
 $msedge = "${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe"
@@ -28,11 +35,12 @@ if (-not $browser) { throw 'Chrome or Edge not found' }
 "browser: $browser"
 
 $question = 'What was decided in the meeting on 2026-10-01?'
+$chatQuestion = 'In two sentences: what is retrieval-augmented generation?'
 # name = url, JavaScript that is true once the page has rendered, seconds to wait for it,
 #        then optionally: JavaScript to run (a click), what is true after it, and the page height
 $text = 'document.body.innerText'
 $pages = [ordered]@{
-    auth     = @('https://auth.ai.local/', "!!document.querySelector('#password-textfield')", 30)  # first: signs in
+    auth     = @('https://auth.ai.local/', "!!document.querySelector('#password-textfield, #authenticated-view')", 30)  # first: signs in
     chat     = @('https://chat.ai.local/', "!!document.querySelector('#chat-input, textarea') && $text.includes('chat-default')", 90)
     agent    = @('https://agent.ai.local/', "!!document.querySelector('[data-testid=stChatInput] textarea') && $text.includes('Tools:')", 60)
     models   = @('https://agent.ai.local/models', "$text.includes('Model for each use case') && $text.includes('History')", 90, $null, $null, 1700)
@@ -46,13 +54,13 @@ $pages = [ordered]@{
     # Phoenix: open the agent project's trace list (its id comes from Phoenix's own API)
     phoenix  = @('https://phoenix.ai.local/projects', "$text.includes('agent') && $text.includes('litellm')", 60,
         "fetch('/v1/projects').then(r => r.json()).then(d => location.assign('/projects/' + d.data.find(p => p.name === 'agent').id))",
-        "location.pathname.split('/').length > 2 && document.querySelectorAll('table tbody tr').length > 2")
-    grafana  = @('https://grafana.ai.local/d/platform-overview?orgId=1&kiosk', "$text.includes('Memory by namespace') && !$text.includes('Loading')", 60)
+        "location.pathname.split('/').length > 2 && document.querySelectorAll('tbody tr').length > 3")
+    grafana  = @('https://grafana.ai.local/d/platform-overview?orgId=1&kiosk', "$text.includes('Memory by namespace') && !$text.includes('Loading') && !$text.includes('Cancel') && document.querySelectorAll('canvas').length >= 6", 90)
     n8n      = @('https://n8n.ai.local/home/workflows', "$text.includes('Email triage') && $text.includes('Daily briefing')", 60)
     # Argo CD: "Log in via Authelia" goes straight through with the platform session
     argocd   = @('https://argocd.ai.local/applications/argocd/platform', "/log in via authelia/i.test($text) || $text.includes('Synced')", 60,
         "[...document.querySelectorAll('button, a')].find(b => /log in via authelia/i.test(b.innerText))?.click()",
-        "$text.includes('Synced') && $text.includes('Healthy')")
+        "/app health\s+healthy/i.test($text) && $text.includes('Synced')")
     actions  = @('https://github.com/nixvarghese01/local-ai-platform/actions', "$text.includes('build')", 60)
 }
 
@@ -87,18 +95,41 @@ function Wait-Js([string]$expr, [int]$seconds) {
     return $false
 }
 
-$port = 9333
-$profileDir = Join-Path $env:TEMP 'local-ai-screenshots'  # throwaway profile; your browser is untouched
-# --ignore-certificate-errors: works before windows-trust-ca.ps1 too (throwaway profile only)
-$proc = Start-Process $browser -PassThru -WindowStyle Hidden -ArgumentList @('--headless=new', '--disable-gpu', '--ignore-certificate-errors',
-    '--hide-scrollbars', "--remote-debugging-port=$port", "--user-data-dir=`"$profileDir`"", 'about:blank')
+if ($Open -or $Attach) {
+    # A visible window you sign in to; its profile is kept between -Open and -Attach
+    $port = 9334
+    $profileDir = Join-Path $env:TEMP 'local-ai-signin'
+}
+else {
+    $port = 9333
+    $profileDir = Join-Path $env:TEMP 'local-ai-screenshots'  # throwaway profile; your browser is untouched
+}
+if ($Open) {
+    $urls = @($pages.Values | ForEach-Object { $_[0] } | Where-Object { $_ -notlike 'https://github.com/*' })
+    Start-Process $browser -ArgumentList (@('--new-window', "--remote-debugging-port=$port", "--user-data-dir=`"$profileDir`"",
+            '--no-first-run', '--no-default-browser-check') + $urls) | Out-Null
+    "Opened $($urls.Count) tabs in a separate $([IO.Path]::GetFileNameWithoutExtension($browser)) window."
+    'Sign in once at https://auth.ai.local in that window, then run:  .\infra\scripts\screenshots.ps1 -Attach'
+    return
+}
+$proc = $null
+if (-not $Attach) {
+    # --ignore-certificate-errors: works before windows-trust-ca.ps1 too (throwaway profile only)
+    $proc = Start-Process $browser -PassThru -WindowStyle Hidden -ArgumentList @('--headless=new', '--disable-gpu', '--ignore-certificate-errors',
+        '--hide-scrollbars', "--remote-debugging-port=$port", "--user-data-dir=`"$profileDir`"", 'about:blank')
+}
 try {
     $target = $null
     for ($i = 0; $i -lt 40 -and -not $target; $i++) {
-        try { $target = (Invoke-RestMethod "http://127.0.0.1:$port/json/list") | Where-Object type -eq 'page' | Select-Object -First 1 }
+        try {
+            $target = if ($Attach) {  # a tab of its own, so your tabs stay as they are
+                Invoke-RestMethod -Method Put "http://127.0.0.1:$port/json/new?about:blank"
+            }
+            else { (Invoke-RestMethod "http://127.0.0.1:$port/json/list") | Where-Object type -eq 'page' | Select-Object -First 1 }
+        }
         catch { Start-Sleep -Milliseconds 250 }
     }
-    if (-not $target) { throw 'browser did not start' }
+    if (-not $target) { throw $(if ($Attach) { "no browser on port ${port}: run with -Open first and sign in" } else { 'browser did not start' }) }
     $script:ws = New-Object Net.WebSockets.ClientWebSocket
     $script:ws.ConnectAsync([Uri]$target.webSocketDebuggerUrl, [Threading.CancellationToken]::None).Wait()
     Send-Cdp 'Emulation.setDeviceMetricsOverride' @{ width = 1400; height = 900; deviceScaleFactor = 1; mobile = $false } | Out-Null
@@ -130,6 +161,16 @@ try {
             if (-not $answered) { Write-Warning 'agent did not answer in 300 s' }
             Send-Cdp 'Runtime.evaluate' @{ expression = "document.querySelector('[data-testid=stExpander] summary')?.click()" } | Out-Null
         }
+        if ($name -eq 'chat') {
+            # A short conversation, so the picture shows the local model answering
+            Send-Cdp 'Runtime.evaluate' @{ expression = "document.querySelector('#chat-input, textarea').focus()" } | Out-Null
+            Send-Cdp 'Input.insertText' @{ text = $chatQuestion } | Out-Null
+            foreach ($t in 'keyDown', 'keyUp') {
+                Send-Cdp 'Input.dispatchKeyEvent' @{ type = $t; key = 'Enter'; code = 'Enter'; windowsVirtualKeyCode = 13; text = "`r" } | Out-Null
+            }
+            # Done when Open WebUI shows the finished answer's buttons (Regenerate)
+            if (-not (Wait-Js "!!document.querySelector('button[aria-label=Regenerate]')" 240)) { Write-Warning 'chat did not answer in 240 s' }
+        }
         Start-Sleep -Seconds 2  # let animations settle
         if (-not $Only -or $name -in $Only) {
             $shot = Send-Cdp 'Page.captureScreenshot' @{ format = 'png' }
@@ -137,7 +178,7 @@ try {
             "{0,-9} {1} ({2:N0} KB)" -f $name, $url, ((Get-Item "$out\$name.png").Length / 1KB)
         }
 
-        if ($name -eq 'auth') {
+        if ($name -eq 'auth' -and -not $Attach) {
             # Sign in once; the session cookie on ai.local then opens every other page
             foreach ($f in @(@('username-textfield', $user), @('password-textfield', $password))) {
                 Send-Cdp 'Runtime.evaluate' @{ expression = "document.getElementById('$($f[0])').focus()" } | Out-Null
@@ -156,9 +197,14 @@ try {
 }
 finally {
     if ($script:ws) { $script:ws.Dispose() }
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-    Get-CimInstance Win32_Process -Filter "Name like '%chrome%' or Name like '%msedge%'" |
-        Where-Object CommandLine -like "*local-ai-screenshots*" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-    Start-Sleep -Milliseconds 500
-    Remove-Item -Recurse -Force $profileDir -ErrorAction SilentlyContinue
+    if ($Attach) {  # leave your window open; close only the tab used for the captures
+        if ($target) { try { Invoke-RestMethod "http://127.0.0.1:$port/json/close/$($target.id)" | Out-Null } catch { $null = $_ } }
+    }
+    else {
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Get-CimInstance Win32_Process -Filter "Name like '%chrome%' or Name like '%msedge%'" |
+            Where-Object CommandLine -like "*local-ai-screenshots*" | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 500
+        Remove-Item -Recurse -Force $profileDir -ErrorAction SilentlyContinue
+    }
 }

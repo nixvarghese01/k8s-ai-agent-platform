@@ -866,7 +866,7 @@ ArgoCD (in k3s, profile gitops) ◄────┘ polls development every ~3 mi
 | Authelia (single sign-on) | 32 MB (limit 256 MB) |
 | n8n (profile automation) | 512 MB (measured ~380 MB) |
 | Phoenix (profile observability) | 512 MB (measured ~500 MB) |
-| Prometheus + Grafana (profile observability) | 768 MB (measured ~320 MB) |
+| Prometheus + Grafana (profile observability) | Prometheus 384 MB; Grafana 256 MB request, 1 GiB limit (measured ~320–350 MB; at 384 MB it timed out under load) |
 | ArgoCD (profile gitops) | 1.3 GB (measured 204 MB, trimmed) |
 | **Total (core, steady state)** | **~13.7 GB** |
 | **Peak (during training)** | **up to WSL cap of 18 GB** |
