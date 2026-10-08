@@ -5,7 +5,7 @@
 # built-in web server (127.0.0.1:8085 only; this version has no WMI provider) and starts it as
 # admin (UAC prompt): reading CPU sensors needs its kernel driver. It stays in the tray; this
 # script reads http://127.0.0.1:8085/data.json. Quit it from the tray icon to stop.
-param([switch]$Load, [int]$IdleSeconds = 30, [int]$LoadSeconds = 90)
+param([switch]$Load, [int]$IdleSeconds = 30, [int]$LoadSeconds = 90, [string]$Model = 'qwen2.5:3b')
 $ErrorActionPreference = 'Stop'
 $distro = 'Ubuntu-26.04'
 $url = 'http://127.0.0.1:8085/data.json'
@@ -97,7 +97,7 @@ function Measure-Phase([string]$Name, [int]$Seconds) {
 $idle = Measure-Phase 'idle' $IdleSeconds
 
 "Ollama generating for $LoadSeconds s..."
-$body = @{ model = 'llama3.2:3b'; stream = $false; options = @{ num_predict = 4000 }
+$body = @{ model = $Model; stream = $false; options = @{ num_predict = 4000 }
     prompt = 'Write a long, detailed essay about the history of computing, at least 2000 words.' } | ConvertTo-Json
 # Ollama answers on Windows' localhost too (WSL forwards it); no quoting through wsl/curl
 $job = Start-Job { Invoke-RestMethod http://localhost:11434/api/generate -Method Post -Body $using:body -ContentType 'application/json' -TimeoutSec 600 | Out-Null }

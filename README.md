@@ -50,7 +50,7 @@ A self-hosted, MCP-based AI agent platform running on **k3s inside WSL2 (Ubuntu 
 |---|---|---|
 | Runtime | k3s (in WSL2) | Lightweight Kubernetes |
 | Ingress | Traefik (bundled with k3s) | Host-based routing to `*.ai.local` UIs |
-| LLM | Ollama: `llama3.2:3b`, `qwen2.5:3b`, `phi3:mini` | CPU inference |
+| LLM | Ollama: one active chat model (default `qwen2.5:3b`; switch on the Models page) + `nomic-embed-text` | CPU inference |
 | Embeddings | `nomic-embed-text` (via Ollama) | Vector embeddings for RAG |
 | LLM gateway | LiteLLM | One OpenAI-compatible API and model aliases for every backend |
 | Agent | LangGraph | Stateful agent graph / orchestration |
@@ -337,7 +337,7 @@ k3s runs as the `k3s` systemd service and ships `kubectl`, Traefik and the `loca
 
 ### 6.3 Models and Ollama settings
 
-Scripts: [`02-pull-models.sh`](infra/scripts/host/02-pull-models.sh) (your user) pulls `llama3.2:3b` and `nomic-embed-text` (~2.3 GB), plus any models you pass it (`02-pull-models.sh qwen2.5:3b phi3:mini`); [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh) (root) writes the systemd override:
+Scripts: [`02-pull-models.sh`](infra/scripts/host/02-pull-models.sh) (your user) pulls `qwen2.5:3b` and `nomic-embed-text` (~2.2 GB), plus any models you pass it (`02-pull-models.sh qwen3:4b`; or download from the Models page, 6.9); [`03-ollama-config.sh`](infra/scripts/host/03-ollama-config.sh) (root) writes the systemd override:
 
 ```ini
 # /etc/systemd/system/ollama.service.d/override.conf
@@ -438,21 +438,25 @@ See [Thermal Management](#12-thermal-management). [`windows-thermal.ps1`](infra/
 
 | Alias | Model | Used by |
 |---|---|---|
-| `chat-default` | `ollama_chat/llama3.2:3b` | Open WebUI (default model), later the agent and n8n |
-| `embed-default` | `ollama/nomic-embed-text` | Open WebUI RAG embeddings |
-| `chat-tools` | `ollama_chat/qwen2.5:3b` (`num_ctx: 8192`) | The file agent (tool calling) |
+| `chat-default` | the **active** chat model (default `qwen2.5:3b`, `num_ctx: 8192`) | Open WebUI, n8n |
+| `chat-tools` | the same active model | The agent (tool calling) |
+| `embed-default` | `ollama/nomic-embed-text` | Document search embeddings (Open WebUI, RAG index) |
+
+**One chat model at a time.** Both chat aliases use the same model, so only one is ever in RAM (plus the small embedding model). The active one is named in ConfigMap `llm/llm-model`, not in Git, so ArgoCD keeps your choice (like the profiles); LiteLLM fills it into its config on start.
+
+**Switch models from the browser:** https://agent.ai.local → **Models**. It lists the downloaded models (size, parameters, whether they can call tools, which is in RAM), switches with one button, downloads a new one by name with a progress bar (suggestions for this CPU laptop included) and deletes ones you don't need. A switch restarts LiteLLM, frees the previous model from RAM and asks the new one a test question: ~1 minute, measured 68 s including loading a 3B model. From a terminal, the same:
+
+| From Windows | Inside Ubuntu | |
+|---|---|---|
+| `.\infra\scripts\platform.ps1 model` | `make model` | downloaded, active, in RAM |
+| `.\infra\scripts\platform.ps1 model use qwen3:4b` | `make model M=qwen3:4b` | download if needed, switch, free the old one |
+| `.\infra\scripts\platform.ps1 model remove llama3.2:3b` | `bash infra/scripts/model.sh remove llama3.2:3b` | delete a model you don't use |
+
+A model without tool calling (the page shows it) still chats, but the agent's file, calendar and web steps won't work with it. The agent's prompts were tuned on `qwen2.5:3b`: after switching, `make e2e` shows what still works. The Models page may change only that ConfigMap and restart LiteLLM (Role `llm/model-switch`).
 
 Every new service should use the OpenAI client with `base_url=http://litellm.llm.svc.cluster.local:4000/v1`, any API key and an alias, never an Ollama URL or model name. Then changing a model is one line in one file.
 
-**Switch a model** (e.g. make `chat-default` use Qwen):
-
-```bash
-bash infra/scripts/host/02-pull-models.sh qwen2.5:3b     # on the WSL host
-# edit infra/k3s/llm/litellm.yaml: chat-default -> model: ollama_chat/qwen2.5:3b
-make llm-reload                                           # apply + restart LiteLLM
-```
-
-**Add a model:** pull it the same way and add a `model_list` entry with a new alias. The file has commented examples (`chat-tools`). It shows up in Open WebUI's model picker after `make llm-reload`.
+**A fixed extra alias** (a second model that loads only when asked for, e.g. `chat-coder`) is still an entry in [`litellm.yaml`](infra/k3s/llm/litellm.yaml), then `make llm-reload`; the file has a commented example.
 
 Changing `embed-default` to another model changes the vectors. Re-index in Open WebUI afterwards (Admin Panel → Settings → Documents → Reindex).
 
@@ -835,7 +839,7 @@ Work down the list; each step depends only on the ones above it. If a step fails
 
 | # | Open | You should see | Quick check (PowerShell, signed out) |
 |---|---|---|---|
-| 0 | http://localhost:11434 | `Ollama is running` (host service, no login) | `curl.exe http://localhost:11434/api/tags` lists `llama3.2:3b`, `qwen2.5:3b`, `nomic-embed-text` |
+| 0 | http://localhost:11434 | `Ollama is running` (host service, no login) | `curl.exe http://localhost:11434/api/tags` lists `qwen2.5:3b`, `nomic-embed-text` and any model you downloaded |
 | 1 | https://auth.ai.local | Authelia sign-in, then "Authenticated" with a *Logout* button; a padlock in the address bar | `curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" https://auth.ai.local` → `200` |
 | 2 | https://llm.ai.local | LiteLLM's API docs (Swagger) | `curl.exe -s --ssl-no-revoke -o NUL -w "%{http_code}" https://llm.ai.local` → `302` (to sign-in) |
 | 3 | https://qdrant.ai.local/dashboard | Qdrant's web UI, collection `docs` from the RAG index (6.12) | same → `302` |
@@ -1019,7 +1023,7 @@ On the reference machine (i7-9850H) the 80% cap slowed a short Ollama reply from
 | Email/Calendar access | The calendar reads `.ics` files and read-only feed URLs (a Secret), so no OAuth is needed; adding events writes the local `agent.ics`, not Google/Outlook. Two-way sync or an IMAP mailbox for workflow 4 would need the provider's OAuth credentials as Secrets. |
 | Web research privacy | The only feature that sends data off the laptop: search queries go to the search engines through SearXNG, and pages are fetched from their sites. It's in its own profile (`research`), off unless you turn it on. |
 | Multi-step latency | A planned request (workflow 7) takes 57–98 s on CPU against a 15–30 s target: one call to plan, then a model round trip per tool, plus a nudge when the model stops early. A larger model or a GPU would cut the round trips. |
-| 3B model quality | `qwen2.5:3b` (`chat-tools`) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
+| 3B model quality | `qwen2.5:3b` (the default active model) calls tools reliably once the prompt gives explicit steps and the tools tolerate wrong paths; `llama3.2:3b` is weaker. Still seen: answers padded with loose summary, and the odd unneeded tool call. Re-test after changing the model or prompt (the `make status` agent and RAG checks, or the questions in 6.10 and 6.12). |
 | Agent latency | File search (workflow 2) measures 10–25 s, not the 2–4 s target: each tool call is a full model round trip on CPU. Document Q&A (workflow 3) avoids the round trip and measures 3–11 s against 3–5 s ([6.12](#612-document-qa-rag-llamaindex--qdrant)). |
 | Image sizes | Our images total 3.6 GB on disk after the shared `ml-base` (5.1 GB before); `pipelines` (Dagster + Evidently) is still 1.8 GB. The k3s image store was 26 GB before `k3s crictl rmi --prune` (19 GB after, mostly third-party: Open WebUI, LiteLLM). |
 | Spam model scope | The message-triage model is trained on SMS spam (prize, premium-number, "text WIN to..." messages) and catches those well (test F1 0.976). Phishing e-mails ("your account is locked, verify at paypa1-verify.top") score as ham (~0.33): the training data has no e-mail phishing. Fix: add an e-mail phishing dataset to the pipeline (same Dagster/Optuna/MLflow path), or let the LLM step in workflow 4 flag suspicious links. Until then, treat a "not spam" verdict on an e-mail as "not known spam". |

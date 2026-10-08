@@ -1,8 +1,11 @@
 # LiteLLM: one OpenAI-compatible gateway in front of every model backend (README §6.9).
 #   In-cluster: http://litellm.llm.svc.cluster.local:4000/v1   API docs: https://llm.ai.local/
-# Clients (Open WebUI, later the agent, n8n) ask for an alias such as `chat-default`; the
-# model_list below maps each alias to a real model. To switch or add a model, edit this
-# ConfigMap, then: kubectl apply -f infra/k3s/llm/litellm.yaml && make llm-reload
+# Clients (Open WebUI, the agent, n8n) ask for an alias such as `chat-default`; the
+# model_list below maps each alias to a real model.
+# One chat model at a time: both chat aliases use the ACTIVE model (__CHAT_MODEL__ below),
+# which lives in ConfigMap llm/llm-model, not in Git, so ArgoCD keeps your choice. Switch with
+#   .\infra\scripts\platform.ps1 model use qwen3:4b     (or: make model M=qwen3:4b)
+# which pulls it, restarts LiteLLM and unloads the previous one (README §6.9).
 # No master key and no database: the API is reachable only from this PC (WSL NAT), and
 # config comes from this file alone.
 apiVersion: v1
@@ -13,11 +16,19 @@ metadata:
 data:
   config.yaml: |
     model_list:
-      # Chat. Point the alias at another model to switch every client at once.
+      # Chat (Open WebUI, n8n) and tool calling (the agent): the same active model, with the
+      # same num_ctx, so Ollama keeps one copy loaded instead of reloading between them.
+      # num_ctx: room for tool results (Ollama's default is smaller).
       - model_name: chat-default
         litellm_params:
-          model: ollama_chat/llama3.2:3b
+          model: ollama_chat/__CHAT_MODEL__
           api_base: http://ollama.llm.svc.cluster.local:11434
+          num_ctx: 8192
+      - model_name: chat-tools
+        litellm_params:
+          model: ollama_chat/__CHAT_MODEL__
+          api_base: http://ollama.llm.svc.cluster.local:11434
+          num_ctx: 8192
 
       # Embeddings for RAG. Changing the model changes the vectors: re-index Qdrant after.
       - model_name: embed-default
@@ -27,15 +38,7 @@ data:
         model_info:
           mode: embedding
 
-      # Tool calling, used by the agent. qwen2.5:3b calls tools far more reliably than
-      # llama3.2:3b (README §15). num_ctx: room for tool results (Ollama's default is smaller).
-      - model_name: chat-tools
-        litellm_params:
-          model: ollama_chat/qwen2.5:3b
-          api_base: http://ollama.llm.svc.cluster.local:11434
-          num_ctx: 8192
-
-      # More models: `ollama pull <name>` on the host, then add an entry like this one.
+      # A fixed extra alias is still possible (it loads a second model when used):
       # - model_name: chat-coder
       #   litellm_params:
       #     model: ollama_chat/qwen2.5-coder:3b
@@ -84,11 +87,21 @@ spec:
           # Pinned release (same digest main-stable had when verified, 2026-10-02).
           # To upgrade: pick a newer vX.Y.Z tag, apply, then run `make status`.
           image: ghcr.io/berriai/litellm:v1.103.1@sha256:df15400b5b80925c45d3fd53f8f7a6c0eaa8a25a86833e1b358002e129018943
-          args: ["--config", "/app/config.yaml", "--port", "4000", "--num_workers", "1"]
+          # Fill in the active model, then start LiteLLM as the image would
+          command: ["sh", "-c"]
+          args:
+            - sed "s|__CHAT_MODEL__|${CHAT_MODEL:-qwen2.5:3b}|g" /app/config.template.yaml > /tmp/config.yaml &&
+              exec litellm --config /tmp/config.yaml --port 4000 --num_workers 1
           ports:
             - name: http
               containerPort: 4000
           env:
+            - name: CHAT_MODEL # the active chat model (model.sh); qwen2.5:3b until one is chosen
+              valueFrom:
+                configMapKeyRef:
+                  name: llm-model
+                  key: model
+                  optional: true
             - name: PHOENIX_COLLECTOR_HTTP_ENDPOINT
               value: http://phoenix.observability.svc.cluster.local:6006/v1/traces
             - name: PHOENIX_PROJECT_NAME
@@ -100,7 +113,7 @@ spec:
           #       name: litellm-keys
           volumeMounts:
             - name: config
-              mountPath: /app/config.yaml
+              mountPath: /app/config.template.yaml
               subPath: config.yaml
           resources:
             requests:

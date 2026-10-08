@@ -24,8 +24,10 @@ kubectl get pods -A --field-selector=status.phase!=Succeeded -o custom-columns='
 echo "== ollama"
 curl -s http://127.0.0.1:11434/api/version; echo
 ollama list
+m=$(kubectl -n llm get configmap llm-model -o jsonpath='{.data.model}' 2>/dev/null || true)  # the active chat model
+echo "active chat model: ${m:=qwen2.5:3b}"
 curl -s http://127.0.0.1:11434/api/generate \
-  -d '{"model":"llama3.2:3b","prompt":"Reply with the single word OK.","stream":false}' |
+  -d "{\"model\":\"$m\",\"prompt\":\"Reply with the single word OK.\",\"stream\":false}" |
   grep -o '"response":"[^"]*"\|"total_duration":[0-9]*'
 
 echo "== pod -> ollama / litellm / qdrant"

@@ -1,5 +1,46 @@
-# Agent UI (Streamlit) at https://agent.ai.local: chat with the file agent (agent/agent.yaml) and
-# see its tool calls. Image built locally by infra/scripts/build-images.sh (`make images`).
+# Agent UI (Streamlit) at https://agent.ai.local: chat with the agent (agent/agent.yaml) and see
+# its tool calls; the Models page picks the one chat model that runs (README §6.9).
+#
+# The Models page may change exactly two things: ConfigMap llm/llm-model (the active model) and
+# a restart of Deployment llm/litellm. Model downloads go to Ollama's own API.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-ui
+  namespace: ui
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: model-switch
+  namespace: llm
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [llm-model]
+    verbs: [get, update, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [create] # creating can't be limited to one name; the first switch creates it
+  - apiGroups: [apps]
+    resources: [deployments]
+    resourceNames: [litellm]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-ui-model-switch
+  namespace: llm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: model-switch
+subjects:
+  - kind: ServiceAccount
+    name: agent-ui
+    namespace: ui
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -17,6 +58,7 @@ spec:
       labels:
         app: agent-ui
     spec:
+      serviceAccountName: agent-ui
       containers:
         - name: agent-ui
           image: ghcr.io/nixvarghese01/local-ai-agent-ui:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:5b0028b6bd6a5d77c2b8a83ac3978cb3774ba2e9a61bbb175849276fa2616fef

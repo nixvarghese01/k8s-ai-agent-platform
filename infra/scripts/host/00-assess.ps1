@@ -89,8 +89,8 @@ if ($d) {
     foreach ($k in $steps.Keys) {
         Check ($k -replace 'tool_', '') 'installed' $w[$k] $(if ($w[$k] -and $w[$k] -ne 'missing') { 'PASS' } else { 'TODO' }) "infra/scripts/host/$($steps[$k])"
     }
-    $hasModels = $w.models -match 'llama3.2:3b' -and $w.models -match 'nomic-embed-text'
-    Check 'Models' 'llama3.2:3b, nomic-embed-text' $w.models $(if ($hasModels) { 'PASS' } elseif ($w.models -match 'not running') { 'INFO' } else { 'TODO' }) 'infra/scripts/host/02-pull-models.sh (start the platform first)'
+    $hasModels = $w.models -match 'qwen2.5:3b' -and $w.models -match 'nomic-embed-text'
+    Check 'Models' 'qwen2.5:3b, nomic-embed-text' $w.models $(if ($hasModels) { 'PASS' } elseif ($w.models -match 'not running') { 'INFO' } else { 'TODO' }) 'infra/scripts/host/02-pull-models.sh (start the platform first)'
 }
 $gpuText = if ($nvidia) { $nvidia -join '; ' } else { ($gpus.Name -join '; ') }
 Check 'GPU' 'not required' $gpuText 'INFO' 'Platform is CPU-only; a GPU with 6+ GB VRAM could speed up Ollama'
