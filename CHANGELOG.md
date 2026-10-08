@@ -30,8 +30,10 @@ First release: the full platform from the 8-week build plus hardening. All 10 us
 - **Delivery:** GitHub Actions (tests, linters, image builds to GHCR pinned by digest), Argo CD
   GitOps, `make e2e` end-to-end check.
 - **Repository:** branching model (feature/bugfix/hotfix/docs branches into `development`,
-  releases `development` → `main`), branch protection rulesets, `branch policy` check,
-  `CODEOWNERS`.
+  releases `development` → `main`, hotfixes into `main`), branch and tag protection rulesets,
+  `branch policy` check, `CODEOWNERS`, automated releases from `CHANGELOG.md` with images
+  promoted by digest, image builds on hotfix branches, Dependabot, cleanup that keeps released
+  images.
 - **Docs:** README, weekly notes, demo script, `SECURITY.md`, `CONTRIBUTING.md`.
 
 ### Known limitations

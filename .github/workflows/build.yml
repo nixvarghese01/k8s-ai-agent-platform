@@ -1,13 +1,15 @@
 # Build the platform's images, push them to GHCR, and pin the new digests in the manifests
 # (README §7). ArgoCD then deploys the commit. Public images: free, no size limit, no pull secret.
-#   ghcr.io/<owner>/local-ai-<name>:sha-<commit>   (+ :development)
+#   ghcr.io/<owner>/local-ai-<name>:sha-<commit>   (+ :development on development)
+# Runs on development and on hotfix/* branches (CONTRIBUTING.md "Branching model"), so a hotfix
+# reaches main with its images already built and pinned; release.yml only tags them.
 # Builds are reproducible (SOURCE_DATE_EPOCH=0, no attestations), so an image whose inputs didn't
 # change keeps its digest and its pods aren't restarted.
 name: build
 
 on:
   push:
-    branches: [development]
+    branches: [development, "hotfix/**"]
     paths:
       - agent/**
       - ui/**
@@ -24,6 +26,7 @@ on:
 permissions:
   contents: write # the bump commit
   packages: write
+  actions: write # re-run the PR checks after a bump on a hotfix branch
 
 concurrency:
   group: build-${{ github.ref }}
@@ -53,7 +56,7 @@ jobs:
           SOURCE_DATE_EPOCH: 0
         with:
           context: images/ml-base
-          tags: ${{ env.PREFIX }}ml-base:sha-${{ github.sha }},${{ env.PREFIX }}ml-base:development
+          tags: ${{ env.PREFIX }}ml-base:sha-${{ github.sha }}${{ github.ref_name == 'development' && format(',{0}ml-base:development', env.PREFIX) || '' }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           outputs: type=image,push=true,rewrite-timestamp=true
           provenance: false
@@ -98,7 +101,7 @@ jobs:
           context: ${{ matrix.context }}
           # mlflow, pipelines and serving start FROM the shared ml-base; the others ignore BASE
           build-args: BASE=${{ env.PREFIX }}ml-base@${{ needs.base.outputs.digest }}
-          tags: ${{ env.PREFIX }}${{ matrix.name }}:sha-${{ github.sha }},${{ env.PREFIX }}${{ matrix.name }}:development
+          tags: ${{ env.PREFIX }}${{ matrix.name }}:sha-${{ github.sha }}${{ github.ref_name == 'development' && format(',{0}{1}:development', env.PREFIX, matrix.name) || '' }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
           outputs: type=image,push=true,rewrite-timestamp=true
           provenance: false
@@ -136,3 +139,12 @@ jobs:
           git commit -am "Deploy images built from ${GITHUB_SHA::7}"
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
+      - name: Re-run the pull request checks (hotfix branches)
+        # a push with the workflow token doesn't start pull_request workflows, so the bump commit
+        # would have no checks and the hotfix PR into main couldn't merge
+        if: startsWith(github.ref_name, 'hotfix/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run ci.yml --ref "${GITHUB_REF_NAME}"
+          gh workflow run branch-policy.yml --ref "${GITHUB_REF_NAME}"

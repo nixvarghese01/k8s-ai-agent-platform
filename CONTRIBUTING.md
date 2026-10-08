@@ -35,22 +35,48 @@ Examples: `feature/42-calendar-reminders`, `bugfix/31-phishing-recall`, `docs/in
   from …`) are the one exception: GitHub Actions may push them directly.
 
 Required checks on both: `unit tests (pytest)`, `lint (manifests, shell, PowerShell, workflows)`,
-`branch policy`.
+`branch policy`. Release tags `v*` can't be moved or deleted.
+
+## Pipelines
+
+| Workflow | Runs on | Does |
+|---|---|---|
+| [`ci`](.github/workflows/ci.yml) | every pull request and push to `development`/`main` | unit tests; lint manifests, shell, PowerShell, n8n workflows |
+| [`branch-policy`](.github/workflows/branch-policy.yml) | pull requests into `development`/`main` | source branch allowed for the target; into `main` also a new, untagged `CHANGELOG.md` version |
+| [`build`](.github/workflows/build.yml) | pushes to `development` and `hotfix/*` touching image sources | builds the images to GHCR, pins their digests in `infra/k3s` (Argo CD deploys `development`) |
+| [`release`](.github/workflows/release.yml) | every merge into `main` | tags the merge commit `vX.Y.Z`, tags the pinned images `vX.Y.Z` and `latest`, publishes the GitHub release |
+| [`cleanup`](.github/workflows/cleanup.yml) | weekly | prunes old image versions; released images are kept |
+| Dependabot | weekly | grouped updates for Actions, pip and base images, as pull requests into `development` |
+
+Images are built once and promoted: `main` runs exactly the digests tested on `development` (or
+the hotfix branch); the release only adds version tags to them.
 
 ## Releases
 
 Versions follow [Semantic Versioning](https://semver.org/): `MAJOR` for breaking changes (manifests
-or APIs that need manual migration), `MINOR` for new features, `PATCH` for fixes.
+or APIs that need manual migration), `MINOR` for new features, `PATCH` for fixes. The version is
+the newest `## [X.Y.Z]` section of `CHANGELOG.md`.
 
-1. On a `chore/release-X.Y.Z` branch, move `[Unreleased]` in `CHANGELOG.md` to `[X.Y.Z] - <date>`;
-   merge it into `development`.
+1. On a `chore/release-X.Y.Z` branch, rename `[Unreleased]` in `CHANGELOG.md` to
+   `[X.Y.Z] - <date>` (and add a new empty `[Unreleased]`); merge it into `development`.
 2. The maintainer opens a pull request `development` → `main` titled `Release vX.Y.Z`, with the
-   changelog section as its description, and merges it with a merge commit.
-3. Tag the merge commit and publish the release:
-   `gh release create vX.Y.Z --target main --title "vX.Y.Z" --notes-file <changelog section>`.
+   changelog section as its description, and merges it with a **merge commit**.
+3. The `release` workflow tags the merge commit `vX.Y.Z` and publishes the release with the
+   changelog section as notes. Nothing to do by hand.
 
-**Hotfix:** branch `hotfix/…` from `main`, pull request into `main`, release a `PATCH` version,
-then open a pull request `main` → `development` so the fix isn't lost.
+## Hotfixes
+
+For an urgent fix to the released version on `main`:
+
+1. Branch `hotfix/<issue>-<topic>` from `main`; fix, add tests, and add a `PATCH` version section
+   (`[X.Y.Z+1] - <date>`) to `CHANGELOG.md`.
+2. Push. If image sources changed, `build` builds them on the hotfix branch and pins the digests
+   there, then re-runs the pull request checks.
+3. Open a pull request into `main`; the maintainer merges it and `release` publishes `vX.Y.Z+1`.
+4. Open a pull request `main` → `development` so the fix isn't lost (keep `development`'s image
+   digests if both changed the same manifest; `build` re-pins on the next push anyway).
+
+A fix for something only on `development` is a `bugfix/` branch, not a hotfix.
 
 ## Development setup
 
