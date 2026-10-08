@@ -41,7 +41,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: mcp-memory
-          image: ghcr.io/nixvarghese01/local-ai-mcp-memory:sha-121bcada4627e5e3eb695014b7296d3b382299e4@sha256:6349941ff09da725ef420913c812f882b168c79086a29219b850cf62153d55e0
+          image: ghcr.io/nixvarghese01/local-ai-mcp-memory:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:bd8f6e8320fe4f96d349a0b5a35ba055933045d9c56aaa5614af25fcb6f9e1d5
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -119,7 +119,7 @@ spec:
         runAsGroup: 1000
       containers:
         - name: mcp-calendar
-          image: ghcr.io/nixvarghese01/local-ai-mcp-calendar:sha-121bcada4627e5e3eb695014b7296d3b382299e4@sha256:1f35a2f034df01bfa8dbaf34ea5b41feb6ee309b20bf049213a65fedda33baf3
+          image: ghcr.io/nixvarghese01/local-ai-mcp-calendar:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:987e55d4f700a03a3f967ae087020fdbb3f6c204cca20ec58b53bba5cd866d15
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -205,7 +205,7 @@ spec:
         runAsUser: 1000
       containers:
         - name: mcp-web
-          image: ghcr.io/nixvarghese01/local-ai-mcp-web:sha-121bcada4627e5e3eb695014b7296d3b382299e4@sha256:9cf2cca89f9a68a4021b4027ae3498ab9b77456bd7bbfcd70f7b9c49d2b3f180
+          image: ghcr.io/nixvarghese01/local-ai-mcp-web:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:01febdc4f531e4609ac46b9f8caeafa8ba7efb0ca109f8d399d8c1fd0c500e71
           imagePullPolicy: IfNotPresent
           ports:
             - name: http

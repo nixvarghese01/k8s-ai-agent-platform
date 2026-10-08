@@ -22,7 +22,7 @@ spec:
     spec:
       containers:
         - name: mcp-filesystem
-          image: ghcr.io/nixvarghese01/local-ai-mcp-filesystem:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:358c39e6964c52eafdec8eecb89753dee9aad5902b462d9600742f8ae7ab35b5
+          image: ghcr.io/nixvarghese01/local-ai-mcp-filesystem:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:e8085838d3942a35a4b223a28829741a3a68a25988f04d30554f2886d8cb3451
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -116,7 +116,7 @@ spec:
         fsGroup: 1000 # the image's user writes the conversations volume
       containers:
         - name: agent
-          image: ghcr.io/nixvarghese01/local-ai-agent:sha-71bf7d72b456432e7a94801ff4fefa2e5d5992fe@sha256:fbefae9ddde0d2319eb72da02ee389eae59df93b3de9d972134341dc383fa957
+          image: ghcr.io/nixvarghese01/local-ai-agent:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:f63f686836104b48f71e5943b01ed4c11af106913a616b58e2d037cc6c994b89
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
@@ -208,7 +208,7 @@ spec:
     spec:
       containers:
         - name: mcp-triage
-          image: ghcr.io/nixvarghese01/local-ai-mcp-triage:sha-37350f4a8203c61c9746c0212c5b121aa5d2610c@sha256:770fbb438d60c9b4c27e016fd2761d17d75582d233e69f24c930120f2d79e76e
+          image: ghcr.io/nixvarghese01/local-ai-mcp-triage:sha-f5dfdc04b1b4f56fe89c321f5361b6a31105442a@sha256:484c24971369087c1457f2332151c3c1e4ac631a0a2492a8467369635e498265
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
