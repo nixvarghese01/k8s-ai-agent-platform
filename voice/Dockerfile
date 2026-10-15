@@ -1,6 +1,6 @@
 # Voice server: faster-whisper (speech-to-text) + Piper (text-to-speech), OpenAI-compatible
 # (infra/k3s/voice/voice.yaml, README section 6.18). Models download into /models on first use.
-FROM python:3.13-slim
+FROM python:3.14-slim
 WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

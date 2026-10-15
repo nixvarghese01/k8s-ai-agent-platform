@@ -1,5 +1,5 @@
 # One image for both the search server (Deployment mcp-rag) and the indexer (CronJob rag-index).
-FROM python:3.13-slim
+FROM python:3.14-slim
 # OCR for scanned PDFs and images (Week 8): Tesseract (English) and poppler to render PDF pages
 RUN apt-get update && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng poppler-utils \
     && rm -rf /var/lib/apt/lists/*
