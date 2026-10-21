@@ -1,5 +1,7 @@
 # K8s AI Agent Platform: Self-Hosted AI Agents, RAG and MLOps on Kubernetes
 
+![Self-hosted AI Agent Platform on Kubernetes](docs/social-preview.png)
+
 [![CI](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/ci.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/ci.yml)
 [![Build](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/build.yml/badge.svg?branch=development)](https://github.com/nixvarghese01/k8s-ai-agent-platform/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -7,10 +9,15 @@
 ![GitOps](https://img.shields.io/badge/GitOps-Argo%20CD-EF7B4D?logo=argo&logoColor=white)
 ![CPU only](https://img.shields.io/badge/GPU-not%20required-brightgreen)
 ![Cost](https://img.shields.io/badge/cloud%20cost-%240-brightgreen)
+[![Stars](https://img.shields.io/github/stars/nixvarghese01/k8s-ai-agent-platform?style=flat)](https://github.com/nixvarghese01/k8s-ai-agent-platform/stargazers)
+[![Last commit](https://img.shields.io/github/last-commit/nixvarghese01/k8s-ai-agent-platform/development)](https://github.com/nixvarghese01/k8s-ai-agent-platform/commits/development)
 
 **A private, self-hosted AI platform that runs on one laptop: no cloud, no GPU, no API keys.** Chat with local LLMs, ask an **AI agent** about your own documents and scans (**retrieval-augmented generation** with citations), automate e-mail triage and a daily briefing, and train, serve and monitor ML models. Everything runs on **Kubernetes (k3s)** with **GitOps** delivery, **single sign-on** and end-to-end **observability**, on CPU-only open-source models.
 
-![The agent answering from the user's own meeting notes, with the retrieved passage and its source](docs/screenshots/agent.png)
+![A tour of the platform: chat, the agent with cited answers, model evaluation, LiteLLM, MLOps, tracing, GitOps and single sign-on](docs/demo/platform-tour.gif)
+
+> If this is useful for your own self-hosted AI setup, a ⭐ helps others find it. Questions and ideas are welcome in
+> [Discussions](https://github.com/nixvarghese01/k8s-ai-agent-platform/discussions).
 
 ## Highlights
 
