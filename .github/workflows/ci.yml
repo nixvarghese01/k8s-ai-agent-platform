@@ -36,6 +36,13 @@ jobs:
       - name: OCR tools (Tesseract, poppler) for the document tests
         run: sudo apt-get update -q && sudo apt-get install -y -q tesseract-ocr poppler-utils
       - run: pip install -r tests/requirements.txt
+      # NLTK refuses data folders other accounts can write to, and the runner's Python toolcache is
+      # world-writable: make llama-index's NLTK cache private and fetch its data again into it.
+      - name: Private NLTK data for llama-index
+        run: |
+          cache="$(python -c 'import os, llama_index.core as c; print(os.path.join(os.path.dirname(c.__file__), "_static", "nltk_cache"))')"
+          mkdir -p "$cache" && chmod -R go-w "$cache"
+          python -c 'import nltk, sys; [nltk.download(p, download_dir=sys.argv[1], force=True, quiet=True) for p in ("stopwords", "punkt_tab")]' "$cache"
       - run: python -m pytest -q -p no:cacheprovider tests
 
   lint:
